@@ -16,6 +16,8 @@ const state = {
   latestPayload: null,
   chartRows: [],
   riskAdjustment: 0,
+  decisionId: null,
+  decisionPackage: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -295,7 +297,17 @@ function normalizePayload(payload) {
     openInvoiceAmount: firstDefined(outputs.open_invoice_amount, summary.open_invoice_amount),
     totalRevenue: firstDefined(outputs.total_order_revenue, summary.total_order_revenue, financialSummary.total_order_revenue),
     totalCost: firstDefined(outputs.total_estimated_cost, summary.total_estimated_cost, financialSummary.total_estimated_cost),
-    agentDecision: firstDefined(outputs.agent_decision, decision.agent_decision, "UNKNOWN"),
+    agentDecision: firstDefined(outputs.agent_decision, decision.agent_decision, decision.recommendation, decision.final_decision, "UNKNOWN"),
+    decisionReasons: textList(
+      decision.reasons,
+      [decision.reason_1, decision.reason_2, decision.reason_3].filter(Boolean)
+    ).slice(0, 3),
+    recommendedPartner: firstDefined(outputs.recommended_partner, decision.recommended_partner, ""),
+    recommendedProduct: firstDefined(outputs.recommended_product, decision.recommended_product, ""),
+    approvalStatus: firstDefined(outputs.approval_status, decision.approval_status, ""),
+    decisionId: firstDefined(outputs.decision_id, decision.decision_id, null),
+    decisionPackage: firstDefined(outputs.decision_package, null),
+    financeAnalysis: firstDefined(finance.finance_analysis, outputs.finance_analysis, ""),
     status: firstDefined(outputs.status, decision.status, finance.status, payload.dify_response?.data?.status, "unknown"),
     message: firstDefined(outputs.message, decision.message, finance.message, ""),
   };
@@ -358,6 +370,8 @@ function renderDashboard(payload) {
   state.latestPayload = payload;
   state.chartRows = data.chartRows;
   state.contractId = data.contract.contract_id || state.contractId;
+  state.decisionId = data.decisionId || null;
+  state.decisionPackage = data.decisionPackage || null;
 
   byId("customerName").value = firstDefined(
     data.contract.customer_name,
@@ -382,11 +396,13 @@ function renderDashboard(payload) {
   renderChecks(data);
 
   const marginGapRatio = normalizeRatio(data.marginGap);
-  const findings = [
-    `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
-    `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
-    `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
-  ];
+  const findings = data.decisionReasons.length === 3
+    ? data.decisionReasons
+    : [
+        `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
+        `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
+        `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
+      ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
   const protectiveConditions = data.protectiveConditions.length
@@ -396,8 +412,15 @@ function renderDashboard(payload) {
       : ["Tiếp tục giám sát dòng tiền và tuân thủ các điều kiện đã phê duyệt."];
   byId("protectiveConditions").textContent = protectiveConditions.join(" ");
 
-  const recommendations = recommendationList(data);
-  byId("recommendations").innerHTML = recommendations.map((text) => `<li>${escapeText(text)}</li>`).join("");
+  const recommendations = [];
+  if (data.agentDecision && data.agentDecision !== "UNKNOWN") {
+    recommendations.push(`Phương án: ${data.agentDecision}.`);
+  }
+  if (data.recommendedPartner || data.recommendedProduct) {
+    recommendations.push(`Đối tác/sản phẩm: ${data.recommendedPartner || "—"} · ${data.recommendedProduct || "—"}.`);
+  }
+  recommendations.push(...recommendationList(data));
+  byId("recommendations").innerHTML = [...new Set(recommendations)].slice(0, 5).map((text) => `<li>${escapeText(text)}</li>`).join("");
 
   const riskLabel = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "Cao" : data.riskLevel === "MEDIUM" ? "Trung bình" : data.riskLevel === "LOW" ? "Thấp" : "Chưa rõ";
   const adjustedRiskScore = numberValue(data.riskScore, NaN) + state.riskAdjustment;
@@ -417,9 +440,9 @@ function renderDashboard(payload) {
   byId("financeAgentIcon").textContent = "✓";
   byId("riskAgentIcon").textContent = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "⚠" : "✓";
   byId("decisionAgentIcon").textContent = "✓";
-  byId("financeAgentText").textContent = data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
-  byId("riskAgentText").textContent = `${data.riskLevel} risk; ${data.monthsBelowReserve.length} tháng dưới mức dự trữ.`;
-  byId("decisionAgentText").textContent = `Quyết định: ${data.agentDecision}.`;
+  byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
+  byId("riskAgentText").textContent = data.decisionReasons[1] || `${data.riskLevel} risk; ${data.monthsBelowReserve.length} tháng dưới mức dự trữ.`;
+  byId("decisionAgentText").textContent = `Khuyến nghị: ${data.agentDecision}${data.recommendedPartner ? ` · ${data.recommendedPartner}` : ""}.`;
 
   byId("financeFlags").innerHTML = data.flags.slice(0, 5).map((flag) => `<span class="tag">${escapeText(flag)}</span>`).join("");
   byId("riskTags").innerHTML = [
@@ -429,8 +452,8 @@ function renderDashboard(payload) {
 
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
   byId("approvalText").textContent = data.approvalRequired
-    ? `${formatMoney(data.contractValue)} > 300 triệu — cần Founder phê duyệt.`
-    : "Giá trị hợp đồng không vượt ngưỡng phê duyệt tự động.";
+    ? `${formatMoney(data.requestedAmount)} hoặc hành động gửi ngoài cần Founder phê duyệt.`
+    : "Không phát sinh điều kiện phê duyệt nhạy cảm.";
 
   byId("cashflowViolation").textContent = data.monthsBelowReserve.length
     ? `⚠ Vi phạm RR-002 — ${data.monthsBelowReserve.join(", ")}`
@@ -688,12 +711,18 @@ async function callAgent2(founderDecision, externalSendConfirmation = null) {
   try {
     const payload = { founder_decision: founderDecision };
     if (externalSendConfirmation) payload.external_send_confirmation = externalSendConfirmation;
+    if (state.decisionId) payload.decision_id = state.decisionId;
+    if (state.decisionPackage) payload.decision_package = state.decisionPackage;
     const response = await requestJson(`/api/agent/founder-decision/${encodeURIComponent(state.contractId)}`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    byId("rawOutput").textContent = JSON.stringify(response.outputs, null, 2);
-    byId("decisionAgentText").textContent = `Founder đã chọn: ${founderDecision}.`;
+    const finalOutputs = response.outputs || {};
+    byId("rawOutput").textContent = JSON.stringify(finalOutputs, null, 2);
+    byId("decisionAgentText").textContent = finalOutputs.message || `Founder đã chọn: ${founderDecision}.`;
+    byId("approvalState").textContent = finalOutputs.approval_status || finalOutputs.final_approval_status || founderDecision;
+    byId("workflowStatus").textContent = finalOutputs.status || finalOutputs.final_session_status || "Completed";
+    byId("agentState").textContent = "Đã kết thúc phiên";
     return response;
   } finally {
     setLoading(false);
@@ -791,9 +820,21 @@ function bindEvents() {
     showToast("Hãy thêm hợp đồng trong Supabase hoặc bổ sung endpoint POST /api/contracts.");
   });
   document.querySelectorAll("[data-decision]").forEach((button) => {
-    button.addEventListener("click", () => button.dataset.decision === "ACCEPT"
-      ? handleAcceptFlow().catch((error) => showToast(error.message, true))
-      : submitDecision(button.dataset.decision));
+    button.addEventListener("click", () => {
+      const action = button.dataset.decision;
+      if (action === "ACCEPT") {
+        handleAcceptFlow().catch((error) => showToast(error.message, true));
+        return;
+      }
+      if (!state.latestPayload) {
+        showToast("Hãy chạy phân tích trước khi ra quyết định.", true);
+        return;
+      }
+      const founderAction = action === "REQUEST_MORE_DATA" ? "request_more_info" : "reject";
+      callAgent2(founderAction, "cancel")
+        .then(() => showToast(`Đã gửi quyết định ${founderAction} tới Agent 2.`))
+        .catch((error) => showToast(error.message, true));
+    });
   });
   window.addEventListener("resize", () => drawCashflowChart(state.chartRows));
 }
