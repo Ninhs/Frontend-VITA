@@ -2,7 +2,7 @@
 
 // Phải khớp với API_BASE trong frontend.js — điền URL Render nếu host
 // frontend riêng trên GitHub Pages, để trống "" nếu chạy chung 1 domain.
-const API_BASE = "";
+const API_BASE = "https://backend-vita.onrender.com";
 
 const form = document.getElementById("loginForm");
 const username = document.getElementById("username");

@@ -8,7 +8,7 @@
 // - Nếu frontend host RIÊNG trên GitHub Pages, backend chạy trên Render,
 //   điền URL Render của bạn vào đây, KHÔNG có dấu "/" ở cuối. Ví dụ:
 //   const API_BASE = "https://opc-ai-agent.onrender.com";
-const API_BASE = "";
+const API_BASE = "https://backend-vita.onrender.com";
 // ============================================================================
 
 const state = {
