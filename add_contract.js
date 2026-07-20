@@ -16,14 +16,19 @@
     "new_revenue_model",
   ];
 
-  async function initAddContractModule() {
+  let initFailed = false;
+
+  // Chỉ khởi tạo (fetch add_contract.html) KHI người dùng thực sự bấm nút
+  // "Thêm HĐ mới" lần đầu — không tự fetch ngay lúc trang vừa tải xong, để
+  // tránh hiện toast lỗi đỏ gây phân tâm khi người dùng chưa đụng tới tính
+  // năng này (vd lúc đang demo phần chính của dashboard).
+  async function ensureAddContractModuleLoaded() {
+    if (byId("addContractModal") || initFailed) return !initFailed;
     try {
       const response = await fetch("add_contract.html", { credentials: "same-origin" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       document.body.insertAdjacentHTML("beforeend", await response.text());
 
-      byId("addContractButton")?.addEventListener("click", openAddContractModal);
-      byId("sideNavAddBtn")?.addEventListener("click", openAddContractModal);
       byId("addContractClose").addEventListener("click", closeAddContractModal);
       byId("btnCancelNewContract").addEventListener("click", closeAddContractModal);
       byId("contractResultClose").addEventListener("click", closeContractResult);
@@ -43,10 +48,23 @@
       });
 
       await loadFormOptions();
+      return true;
     } catch (error) {
+      initFailed = true;
       console.error("Không khởi tạo được form thêm hợp đồng:", error);
       showToast(`Không tải được form thêm hợp đồng: ${error.message}`, true);
+      return false;
     }
+  }
+
+  async function handleAddContractClick() {
+    const ready = await ensureAddContractModuleLoaded();
+    if (ready) openAddContractModal();
+  }
+
+  function initAddContractModule() {
+    byId("addContractButton")?.addEventListener("click", handleAddContractClick);
+    byId("sideNavAddBtn")?.addEventListener("click", handleAddContractClick);
   }
 
   async function loadFormOptions() {
