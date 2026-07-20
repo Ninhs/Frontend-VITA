@@ -553,6 +553,10 @@ function renderDashboard(payload) {
     ? `${riskLabel} (${adjustedRiskScore} điểm${state.riskAdjustment ? ", +2 do bỏ qua dữ liệu" : ""})`
     : riskLabel;
 
+  byId("riskScore").textContent = Number.isFinite(adjustedRiskScore)
+    ? String(Math.round(adjustedRiskScore))
+    : "—";
+
 
   // Tooltip chi tiết: mã giao dịch bất thường + risk_score + căn cứ, cộng
   // các tháng dòng tiền dự kiến âm — giúp Founder biết ngay VÌ SAO điểm cao.
@@ -618,6 +622,7 @@ function renderDashboard(payload) {
 
 
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
+  byId("founderRequestedAmount").textContent = formatMoney(data.requestedAmount);
 
 
   const requestedAmountNumber = numberValue(data.requestedAmount, NaN);
@@ -1046,6 +1051,34 @@ function bindEvents() {
     state.contractId = byId("contractSelect").value;
     const option = byId("contractSelect").selectedOptions[0];
     if (option?.dataset.customer) byId("customerName").value = option.dataset.customer;
+
+    // Không giữ số liệu của hợp đồng trước khi người dùng vừa đổi lựa chọn.
+    state.latestPayload = null;
+    state.chartRows = [];
+    state.riskAdjustment = 0;
+    [
+      "paymentReliability", "strategicValue", "grossMargin", "contractValue",
+      "fundingNeed", "reserveMinimum", "riskLevel", "confidenceScore",
+      "anomalyCount", "riskScore", "founderRequestedAmount"
+    ].forEach((id) => { byId(id).textContent = "—"; });
+    setProgress("finance", null);
+    setProgress("risk", null);
+    setProgress("decision", null);
+    byId("workflowStatus").className = "status-pill status-idle";
+    byId("workflowStatus").textContent = "Chưa chạy";
+    byId("agentState").textContent = "Chờ phân tích";
+    byId("dataChecks").innerHTML = "";
+    byId("keyFindings").innerHTML = "";
+    byId("recommendations").innerHTML = "";
+    byId("protectiveConditions").textContent = "";
+    byId("financeAgentText").textContent = "Chưa chạy phân tích tài chính.";
+    byId("riskAgentText").textContent = "Chưa có đánh giá rủi ro.";
+    byId("decisionAgentText").textContent = "Chưa có quyết định.";
+    byId("approvalText").textContent = "Chưa có kết quả phân tích.";
+    byId("cashflowViolation").textContent = "";
+    byId("rawOutput").textContent = "";
+    byId("workflowRunId").textContent = "Workflow run: —";
+    drawCashflowChart([]);
   });
   document.querySelectorAll("[data-decision]").forEach((button) => {
     button.addEventListener("click", () => button.dataset.decision === "ACCEPT"
