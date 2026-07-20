@@ -295,13 +295,16 @@ function normalizePayload(payload) {
       finance.risk_score
     ),
     requestedAmount: firstDefined(outputs.requested_amount, decision.requested_amount, finance.requested_amount, contract.requested_amount, fundingNeed, 0),
-    protectiveConditions: textList(
+    // outputs.protective_conditions và decision.protective_conditions thường
+    // chứa CÙNG một câu (node 25 ghi trùng ở 2 chỗ) -> phải loại trùng ở đây,
+    // nếu không câu điều kiện bảo vệ sẽ bị lặp lại 2 lần khi hiển thị.
+    protectiveConditions: [...new Set(textList(
       outputs.protective_conditions,
       outputs.protection_conditions,
       decision.protective_conditions,
       decision.conditions,
       finance.protective_conditions
-    ),
+    ))],
     approvalRequired,
     openInvoiceAmount: firstDefined(outputs.open_invoice_amount, summary.open_invoice_amount),
     totalRevenue: firstDefined(outputs.total_order_revenue, summary.total_order_revenue, financialSummary.total_order_revenue),
@@ -495,15 +498,17 @@ function renderDashboard(payload) {
   byId("decisionAgentIcon").textContent = "✓";
   byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
   byId("riskAgentText").textContent = data.decisionReasons[1]
-    || `${data.riskLevel} risk (${data.anomalyTransactionCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dưới mức dự trữ.`;
+    || `Mức rủi ro ${data.riskLevel}, có ${data.anomalyTransactionCount} giao dịch bất thường và ${data.monthsBelowReserve.length} tháng dòng tiền dưới mức dự trữ.`;
   byId("decisionAgentText").textContent = `Khuyến nghị: ${data.agentDecision}${data.recommendedPartner ? ` · ${data.recommendedPartner}` : ""}.`;
 
-  byId("financeFlags").innerHTML = data.flags.slice(0, 5).map((flag) => `<span class="tag">${escapeText(flag)}</span>`).join("");
-  byId("riskTags").innerHTML = [
-    data.riskLevel !== "UNKNOWN" ? `Rủi ro ${data.riskLevel}` : null,
-    data.anomalyTransactionCount ? `${data.anomalyTransactionCount} giao dịch bất thường` : null,
-    data.monthsBelowReserve.length ? `Thiếu quỹ ${data.monthsBelowReserve.length} tháng` : null,
-  ].filter(Boolean).map((tag) => `<span class="tag">${escapeText(tag)}</span>`).join("");
+  // Theo yêu cầu: không hiển thị dãy tag mã cờ thô (WORKING_CAPITAL_REQUIRED,
+  // RR-002_CASH_BELOW_RESERVE...) trên Agent Workflow — chỉ giữ lại phần văn
+  // xuôi ở financeAgentText/riskAgentText phía trên. Mã cờ + insight vẫn còn
+  // đầy đủ ở mục "Kiểm tra dữ liệu" (renderChecks) cho ai cần xem chi tiết.
+  byId("financeFlags").innerHTML = "";
+  byId("financeFlags").style.display = "none";
+  byId("riskTags").innerHTML = "";
+  byId("riskTags").style.display = "none";
 
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
   byId("approvalText").textContent = data.approvalRequired
