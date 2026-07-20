@@ -84,17 +84,29 @@ function escapeText(value) {
 async function requestJson(url, options = {}) {
   // Nối API_BASE nếu url là đường dẫn tương đối bắt đầu bằng "/"
   const fullUrl = API_BASE && url.startsWith("/") ? `${API_BASE}${url}` : url;
-  const response = await fetch(fullUrl, {
-    ...options,
-    // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
-    // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
-    // mọi API trả 401 dù đã đăng nhập thành công.
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  const headers = { ...(options.headers || {}) };
+  const hasBody = options.body !== undefined && options.body !== null;
+
+  // GET cross-domain không nên gửi Content-Type: application/json,
+  // vì header này làm browser gửi preflight OPTIONS. Nếu backend/Render
+  // chưa xử lý OPTIONS/CORS hoàn chỉnh, frontend sẽ chỉ thấy "Failed to fetch".
+  if (hasBody && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  let response;
+  try {
+    response = await fetch(fullUrl, {
+      ...options,
+      // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
+      // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
+      // mọi API trả 401 dù đã đăng nhập thành công.
+      credentials: "include",
+      headers,
+    });
+  } catch (error) {
+    throw new Error(`Không gọi được backend ${fullUrl}: ${error.message || "Failed to fetch"}`);
+  }
 
   const rawBody = await response.text();
   let body = {};
@@ -418,7 +430,7 @@ function renderDashboard(payload) {
     `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
   ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
-
+GET cross-domain không nên gửi Content-Type
   const protectiveConditions = data.protectiveConditions.length
     ? data.protectiveConditions
     : data.missingFields.length
