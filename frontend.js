@@ -1,5 +1,6 @@
 "use strict";
 
+
 // ============================================================================
 // CẤU HÌNH BACKEND — frontend chạy trên GitHub Pages, backend chạy trên Render,
 // nên MỌI lệnh gọi API phải trỏ tuyệt đối sang domain Render, không dùng
@@ -9,12 +10,14 @@
 const API_BASE = "https://backend-vita.onrender.com";
 // ============================================================================
 
+
 const state = {
   contractId: "CON-004",
   latestPayload: null,
   chartRows: [],
   riskAdjustment: 0,
 };
+
 
 const _warnedMissingIds = new Set();
 function _safeStub(id) {
@@ -41,6 +44,7 @@ function _safeStub(id) {
 const byId = (id) => document.getElementById(id) || _safeStub(id);
 const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== "");
 
+
 function parseJsonMaybe(value) {
   if (typeof value !== "string") return value ?? {};
   try {
@@ -50,16 +54,19 @@ function parseJsonMaybe(value) {
   }
 }
 
+
 function numberValue(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
+
 
 function normalizeRatio(value) {
   const number = numberValue(value, NaN);
   if (!Number.isFinite(number)) return null;
   return Math.abs(number) <= 1 ? number : number / 100;
 }
+
 
 function booleanValue(value, fallback = false) {
   if (typeof value === "boolean") return value;
@@ -72,11 +79,13 @@ function booleanValue(value, fallback = false) {
   return value == null ? fallback : Boolean(value);
 }
 
+
 function formatPercent(value, digits = 0) {
   const ratio = normalizeRatio(value);
   if (ratio === null) return "—";
   return `${(ratio * 100).toFixed(digits)}%`;
 }
+
 
 function formatMoney(value) {
   const amount = numberValue(value, NaN);
@@ -87,12 +96,14 @@ function formatMoney(value) {
   return new Intl.NumberFormat("vi-VN").format(amount);
 }
 
+
 function formatFullMoney(value) {
   const amount = numberValue(value, NaN);
   return Number.isFinite(amount)
     ? `${new Intl.NumberFormat("vi-VN").format(amount)} VND`
     : "—";
 }
+
 
 function escapeText(value) {
   return String(value ?? "")
@@ -102,6 +113,7 @@ function escapeText(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
 
 async function requestJson(url, options = {}) {
   // Nối API_BASE nếu url là đường dẫn tương đối bắt đầu bằng "/"
@@ -131,6 +143,7 @@ async function requestJson(url, options = {}) {
     );
   }
 
+
   const rawBody = await response.text();
   let body = {};
   try {
@@ -138,6 +151,7 @@ async function requestJson(url, options = {}) {
   } catch {
     body = { detail: rawBody || `HTTP ${response.status}` };
   }
+
 
   if (response.status === 401) {
     // Trên GitHub Pages không có middleware server-side chặn truy cập
@@ -151,13 +165,16 @@ async function requestJson(url, options = {}) {
     throw new Error("Phiên đăng nhập không hợp lệ hoặc đã hết hạn.");
   }
 
+
   if (!response.ok) {
     const message = body.detail || body.message || `HTTP ${response.status}`;
     throw new Error(typeof message === "string" ? message : JSON.stringify(message));
   }
 
+
   return body;
 }
+
 
 function setLoading(isLoading) {
   byId("loadingOverlay").hidden = !isLoading;
@@ -168,6 +185,7 @@ function setLoading(isLoading) {
     byId("agentState").textContent = "Đang xử lý";
   }
 }
+
 
 let toastTimer;
 function showToast(message, isError = false) {
@@ -180,6 +198,7 @@ function showToast(message, isError = false) {
   }, 4200);
 }
 
+
 function setProgress(prefix, confidence) {
   const ratio = normalizeRatio(confidence);
   const percent = ratio === null ? 0 : Math.max(0, Math.min(100, ratio * 100));
@@ -187,10 +206,12 @@ function setProgress(prefix, confidence) {
   byId(`${prefix}Progress`).style.width = `${percent}%`;
 }
 
+
 function unionFlags(...groups) {
   const values = groups.flatMap((group) => Array.isArray(group) ? group : []);
   return [...new Set(values.filter(Boolean))];
 }
+
 
 function textList(...values) {
   return values.flatMap((value) => {
@@ -201,11 +222,13 @@ function textList(...values) {
   }).filter(Boolean);
 }
 
+
 function normalizePayload(payload) {
   const outputs = payload.outputs
     || payload.data?.outputs
     || payload.dify_response?.data?.outputs
     || {};
+
 
   const decision = parseJsonMaybe(outputs.decision);
   const finance = parseJsonMaybe(outputs.finance_result);
@@ -216,11 +239,14 @@ function normalizePayload(payload) {
   const baseCId = String(baseContract.customer_id || "").trim();
   const matchedCustomer = customers.find(c => String(c.customer_id || "").trim() === baseCId) || customers[0] || {};
 
+
   const contract = { ...matchedCustomer, ...baseContract };
+
 
   const financialSummary = finance.financial_summary || {};
   const cashflowSummary = finance.cashflow_summary || {};
   const summary = decision.summary || {};
+
 
   const chartRows = firstDefined(
     cashflowSummary.monthly_summary,
@@ -229,11 +255,13 @@ function normalizePayload(payload) {
     []
   );
 
+
   const flags = unionFlags(
     outputs.financial_flags,
     decision.financial_flags,
     finance.financial_flags
   );
+
 
   const computedMargin = firstDefined(
     outputs.computed_margin,
@@ -242,6 +270,7 @@ function normalizePayload(payload) {
     contract.gross_margin
   );
 
+
   const targetMargin = firstDefined(
     outputs.target_margin,
     summary.target_margin,
@@ -249,6 +278,7 @@ function normalizePayload(payload) {
     contract.target_margin,
     0.28
   );
+
 
   const computedRatio = normalizeRatio(computedMargin);
   const targetRatio = normalizeRatio(targetMargin);
@@ -261,16 +291,19 @@ function normalizePayload(payload) {
       : null
   );
 
+
   const reserveMinimum = firstDefined(
     chartRows?.[0]?.cash_reserve_minimum,
     contract.cash_reserve_minimum,
     contract.reserve_minimum
   );
 
+
   const workflowRunId = payload.dify_response?.workflow_run_id
     || payload.dify_response?.data?.id
     || payload.workflow_run_id
     || null;
+
 
   const missingFields = unionFlags(
     outputs.missing_fields,
@@ -278,11 +311,13 @@ function normalizePayload(payload) {
     decision.external_reasons
   );
 
+
   const contractValue = firstDefined(
     contract.contract_value,
     contract.value,
     contract.total_value
   );
+
 
   const fundingNeed = firstDefined(
     outputs.maximum_funding_need,
@@ -290,6 +325,7 @@ function normalizePayload(payload) {
     finance.funding_need,
     cashflowSummary.maximum_funding_need
   );
+
 
   const monthsBelowReserve = firstDefined(
     outputs.months_below_reserve,
@@ -299,6 +335,7 @@ function normalizePayload(payload) {
     []
   );
 
+
   const cashflowRisk = firstDefined(finance.cashflow_risk_level, outputs.risk_level, "UNKNOWN");
   const riskLevel = String(cashflowRisk).toUpperCase();
   const requestedAmount = firstDefined(outputs.requested_amount, decision.requested_amount, finance.requested_amount, contract.requested_amount, fundingNeed, 0);
@@ -307,6 +344,7 @@ function normalizePayload(payload) {
     decision.approval_required,
     contractValue != null ? numberValue(contractValue) > 300_000_000 : false
   ));
+
 
   return {
     payload,
@@ -386,6 +424,7 @@ function normalizePayload(payload) {
   };
 }
 
+
 function renderChecks(data) {
   // Mục này CHỈ trả lời 1 câu hỏi: hệ thống đọc được đủ dữ liệu cần thiết
   // cho hợp đồng này chưa (có/không có trong bảng dữ liệu), KHÔNG lẫn với
@@ -423,14 +462,17 @@ function renderChecks(data) {
     })),
   ];
 
+
   byId("dataChecks").innerHTML = checks.map((item) => `
     <li><span class="dot dot-${item.status}"></span>${escapeText(item.text)}</li>
   `).join("");
 }
 
+
 function recommendationList(data) {
   const items = [];
   const marginGap = normalizeRatio(data.marginGap);
+
 
   if (marginGap !== null && marginGap < 0) {
     items.push("Rà soát pricing, chi phí và biên lợi nhuận trước khi ký.");
@@ -448,11 +490,13 @@ function recommendationList(data) {
   return items;
 }
 
+
 function renderDashboard(payload) {
   const data = normalizePayload(payload);
   state.latestPayload = payload;
   state.chartRows = data.chartRows;
   state.contractId = data.contract.contract_id || state.contractId;
+
 
   byId("customerName").value = firstDefined(
     data.contract.customer_name,
@@ -469,12 +513,15 @@ function renderDashboard(payload) {
   byId("fundingNeed").textContent = formatMoney(data.fundingNeed);
   byId("reserveMinimum").textContent = formatMoney(data.reserveMinimum);
 
+
   const status = String(data.status).toLowerCase();
   byId("workflowStatus").textContent = status === "partial" ? "Partial" : status === "succeeded" ? "Succeeded" : status;
   byId("workflowStatus").className = `status-pill ${status === "partial" ? "status-partial" : status === "succeeded" ? "status-success" : "status-idle"}`;
   byId("agentState").textContent = status === "partial" ? "Cần bổ sung dữ liệu" : "Đã hoàn thành";
 
+
   renderChecks(data);
+
 
   const marginGapRatio = normalizeRatio(data.marginGap);
   const findings = data.decisionReasons.length === 3
@@ -486,6 +533,7 @@ function renderDashboard(payload) {
   ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
+
   const protectiveConditions = data.protectiveConditions.length
     ? data.protectiveConditions
     : data.missingFields.length
@@ -493,8 +541,10 @@ function renderDashboard(payload) {
       : ["Tiếp tục giám sát dòng tiền và tuân thủ các điều kiện đã phê duyệt."];
   byId("protectiveConditions").textContent = protectiveConditions.join(" ");
 
+
   const recommendations = recommendationList(data);
   byId("recommendations").innerHTML = recommendations.map((text) => `<li>${escapeText(text)}</li>`).join("");
+
 
   // Chỉ hiện mức độ Cao/Trung bình/Thấp kèm điểm số ở thẻ Input Data này.
   const riskLabel = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "Cao" : data.riskLevel === "MEDIUM" ? "Trung bình" : data.riskLevel === "LOW" ? "Thấp" : "Chưa rõ";
@@ -502,6 +552,7 @@ function renderDashboard(payload) {
   byId("riskLevel").textContent = Number.isFinite(adjustedRiskScore)
     ? `${riskLabel} (${adjustedRiskScore} điểm${state.riskAdjustment ? ", +2 do bỏ qua dữ liệu" : ""})`
     : riskLabel;
+
 
   // Tooltip chi tiết: mã giao dịch bất thường + risk_score + căn cứ, cộng
   // các tháng dòng tiền dự kiến âm — giúp Founder biết ngay VÌ SAO điểm cao.
@@ -514,6 +565,7 @@ function renderDashboard(payload) {
       : []),
   ];
 
+
   // confidenceScore hiển thị ở đây là confidence_score CUỐI CÙNG do Decision &
   // Partner Agent tổng hợp theo công thức trọng số (dữ liệu đầy đủ, tính toán
   // tài chính, nguồn bằng chứng thật, độ rõ ràng rủi ro, độ phù hợp đối tác) —
@@ -525,10 +577,12 @@ function renderDashboard(payload) {
   byId("confidenceScore").title = data.confidenceExplanation
     || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
 
+
   // Số giao dịch bất thường (RR-001) cần Founder xử lý — thay cho việc đếm
   // gộp cờ + trường thiếu (vốn không có ý nghĩa nghiệp vụ rõ ràng).
   byId("anomalyCount").textContent = String(data.anomalyTransactionCount || 0);
   byId("anomalyCount").title = anomalyDetailLines.join("\n");
+
 
   const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
   const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
@@ -537,17 +591,21 @@ function renderDashboard(payload) {
   setProgress("risk", riskConfidence);
   setProgress("decision", decisionConfidence);
 
+
   byId("financeAgentIcon").textContent = "✓";
   byId("riskAgentIcon").textContent = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "⚠" : "✓";
   byId("decisionAgentIcon").textContent = "✓";
   byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
+
 
   // Diễn giải rủi ro bằng lý do thật từ backend; fallback nêu rõ số giao
   // dịch bất thường thật (không phải đếm gộp cờ + trường thiếu).
   byId("riskAgentText").textContent = data.decisionReasons[1]
     || `${riskLabel} rủi ro (${data.anomalyTransactionCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dòng tiền dưới mức dự trữ.`;
 
+
   byId("decisionAgentText").textContent = `Quyết định: ${data.agentDecision}.`;
+
 
   // Theo yêu cầu: không hiển thị dãy tag mã cờ thô (WORKING_CAPITAL_REQUIRED,
   // RR-002_CASH_BELOW_RESERVE...) trên Agent Workflow — chỉ giữ lại phần văn
@@ -558,7 +616,9 @@ function renderDashboard(payload) {
   byId("riskTags").innerHTML = "";
   byId("riskTags").style.display = "none";
 
+
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
+
 
   const requestedAmountNumber = numberValue(data.requestedAmount, NaN);
   byId("approvalText").textContent = !Number.isFinite(requestedAmountNumber)
@@ -569,16 +629,20 @@ function renderDashboard(payload) {
         ? `${formatMoney(data.requestedAmount)} — Yêu cầu phê duyệt theo Workflow.`
         : `${formatMoney(data.requestedAmount)} (Không vượt ngưỡng 300 triệu).`;
 
+
   byId("cashflowViolation").textContent = data.monthsBelowReserve.length
     ? `⚠ Vi phạm RR-002 — ${data.monthsBelowReserve.join(", ")}`
     : "Không phát hiện tháng dưới mức dự trữ.";
+
 
   byId("rawOutput").textContent = JSON.stringify(data.outputs, null, 2);
   byId("workflowRunId").textContent = `Workflow run: ${data.workflowRunId || "—"}`;
   byId("lastRun").textContent = `Thực thi gần nhất: ${new Date().toLocaleTimeString("vi-VN")}`;
 
+
   drawCashflowChart(data.chartRows);
 }
+
 
 function compactAxis(value) {
   const abs = Math.abs(value);
@@ -587,6 +651,7 @@ function compactAxis(value) {
   return String(Math.round(value));
 }
 
+
 function drawCashflowChart(rows) {
   const canvas = byId("cashflowChart");
   const rect = canvas.getBoundingClientRect();
@@ -594,11 +659,13 @@ function drawCashflowChart(rows) {
   canvas.width = Math.max(320, Math.round(rect.width * ratio));
   canvas.height = Math.max(220, Math.round(rect.height * ratio));
 
+
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
   const width = canvas.width / ratio;
   const height = canvas.height / ratio;
   ctx.clearRect(0, 0, width, height);
+
 
   if (!Array.isArray(rows) || !rows.length) {
     ctx.fillStyle = "#6c788a";
@@ -608,12 +675,14 @@ function drawCashflowChart(rows) {
     return;
   }
 
+
   const normalized = rows.map((row, index) => ({
     month: row.month || row.period || `T${index + 1}`,
     cashIn: numberValue(firstDefined(row.expected_cash_in, row.cash_in, row.inflow)),
     cashOut: numberValue(firstDefined(row.expected_cash_out, row.cash_out, row.outflow)),
     closing: numberValue(firstDefined(row.projected_closing_cash, row.closing_cash, row.balance)),
   }));
+
 
   const values = normalized.flatMap((row) => [row.cashIn, -row.cashOut, row.closing]);
   let minValue = Math.min(0, ...values);
@@ -623,17 +692,20 @@ function drawCashflowChart(rows) {
   minValue -= range * 0.12;
   maxValue += range * 0.12;
 
+
   const margin = { top: 18, right: 18, bottom: 42, left: 58 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const y = (value) => margin.top + ((maxValue - value) / (maxValue - minValue)) * plotHeight;
   const zeroY = y(0);
 
+
   ctx.font = "11px system-ui";
   ctx.strokeStyle = "#e3e7ed";
   ctx.fillStyle = "#657084";
   ctx.lineWidth = 1;
   ctx.textAlign = "right";
+
 
   for (let i = 0; i <= 5; i += 1) {
     const value = maxValue - ((maxValue - minValue) * i / 5);
@@ -645,30 +717,37 @@ function drawCashflowChart(rows) {
     ctx.fillText(compactAxis(value), margin.left - 8, lineY + 4);
   }
 
+
   ctx.strokeStyle = "#7d8590";
   ctx.beginPath();
   ctx.moveTo(margin.left, zeroY);
   ctx.lineTo(width - margin.right, zeroY);
   ctx.stroke();
 
+
   const slot = plotWidth / normalized.length;
   const barWidth = Math.min(28, slot * 0.25);
 
+
   normalized.forEach((row, index) => {
     const centerX = margin.left + slot * (index + 0.5);
+
 
     ctx.fillStyle = "#54d88d";
     const inTop = y(row.cashIn);
     ctx.fillRect(centerX - barWidth - 2, inTop, barWidth, Math.max(1, zeroY - inTop));
 
+
     ctx.fillStyle = "#ef7070";
     const outBottom = y(-row.cashOut);
     ctx.fillRect(centerX + 2, zeroY, barWidth, Math.max(1, outBottom - zeroY));
+
 
     ctx.fillStyle = "#5d6674";
     ctx.textAlign = "center";
     ctx.fillText(String(row.month).replace("2026-", "T"), centerX, height - 15);
   });
+
 
   ctx.strokeStyle = "#5d6470";
   ctx.fillStyle = "#5d6470";
@@ -682,6 +761,7 @@ function drawCashflowChart(rows) {
   });
   ctx.stroke();
 
+
   normalized.forEach((row, index) => {
     const centerX = margin.left + slot * (index + 0.5);
     const lineY = y(row.closing);
@@ -691,11 +771,13 @@ function drawCashflowChart(rows) {
   });
 }
 
+
 async function loadContracts() {
   try {
     const response = await requestJson("/api/contracts");
     const contracts = Array.isArray(response.data) ? response.data : [];
     if (!contracts.length) return;
+
 
     const select = byId("contractSelect");
     select.innerHTML = contracts.map((contract) => {
@@ -703,6 +785,7 @@ async function loadContracts() {
       const customer = contract.customer_name || contract.customer_id || "";
       return `<option value="${escapeText(id)}" data-customer="${escapeText(customer)}">${escapeText(id)}</option>`;
     }).join("");
+
 
     if (contracts.some((contract) => (contract.contract_id || contract.id) === state.contractId)) {
       select.value = state.contractId;
@@ -714,12 +797,15 @@ async function loadContracts() {
   }
 }
 
+
 async function analyzeSelectedContract() {
   const contractId = byId("contractSelect").value.trim().toUpperCase();
   if (!contractId) return showToast("Hãy chọn mã hợp đồng.", true);
 
+
   state.contractId = contractId;
   setLoading(true);
+
 
   try {
     const payload = await requestJson(`/api/agent/analyze/${encodeURIComponent(contractId)}`, {
@@ -736,6 +822,7 @@ async function analyzeSelectedContract() {
     setLoading(false);
   }
 }
+
 
 function openModal({ step, title, message, fields = "", actions }) {
   byId("modalStep").textContent = step;
@@ -761,6 +848,7 @@ function openModal({ step, title, message, fields = "", actions }) {
   });
 }
 
+
 async function rerunAgent1(body) {
   setLoading(true);
   try {
@@ -774,6 +862,7 @@ async function rerunAgent1(body) {
     setLoading(false);
   }
 }
+
 
 async function handleMissingData(missingFields) {
   const choice = await openModal({
@@ -820,11 +909,36 @@ async function handleMissingData(missingFields) {
   return false;
 }
 
+
 async function callAgent2(founderDecision, externalSendConfirmation = null) {
   setLoading(true);
   try {
+    const outputs = state.latestPayload?.outputs
+      || state.latestPayload?.data?.outputs
+      || state.latestPayload?.dify_response?.data?.outputs
+      || {};
+    const decisionPackageRaw = firstDefined(
+      outputs.decision_package,
+      outputs.output_payload,
+      outputs.final_frontend_payload_json,
+      outputs.decision
+    );
+    const decisionPackage = parseJsonMaybe(decisionPackageRaw);
     const payload = { founder_decision: founderDecision };
     if (externalSendConfirmation) payload.external_send_confirmation = externalSendConfirmation;
+
+    const decisionId = firstDefined(outputs.decision_id, decisionPackage.decision_id);
+    const caseId = firstDefined(outputs.case_id, decisionPackage.case_id);
+    const traceId = firstDefined(outputs.trace_id, decisionPackage.trace_id);
+    if (decisionId) payload.decision_id = String(decisionId);
+    if (caseId) payload.case_id = String(caseId);
+    if (traceId) payload.trace_id = String(traceId);
+    if (decisionPackageRaw) {
+      payload.decision_package = typeof decisionPackageRaw === "string"
+        ? decisionPackageRaw
+        : JSON.stringify(decisionPackageRaw);
+    }
+
     const response = await requestJson(`/api/agent/founder-decision/${encodeURIComponent(state.contractId)}`, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -837,6 +951,7 @@ async function callAgent2(founderDecision, externalSendConfirmation = null) {
   }
 }
 
+
 async function handleAcceptFlow() {
   if (!state.latestPayload) return showToast("Hãy chạy phân tích trước khi duyệt hợp đồng.", true);
   let data = normalizePayload(state.latestPayload);
@@ -845,6 +960,7 @@ async function handleAcceptFlow() {
     if (!skipped) return;
     data = normalizePayload(state.latestPayload);
   }
+
 
   const founderDecision = await openModal({
     step: "Popup 2 · Quyết định Founder",
@@ -862,6 +978,7 @@ async function handleAcceptFlow() {
     showToast("Đã gửi quyết định của Founder tới Agent 2.");
     return;
   }
+
 
   const aboveThreshold = numberValue(data.requestedAmount) > 300_000_000;
   const confirmation = await openModal({
@@ -881,14 +998,17 @@ async function handleAcceptFlow() {
   else showToast("Đã ghi nhận duyệt nhưng hủy gửi hồ sơ đến ngân hàng.");
 }
 
+
 async function submitDecision(decision) {
   if (!state.latestPayload) {
     return showToast("Hãy chạy phân tích trước khi lưu quyết định.", true);
   }
 
+
   const workflowRunId = state.latestPayload.dify_response?.workflow_run_id
     || state.latestPayload.dify_response?.data?.id
     || null;
+
 
   try {
     await requestJson(`/api/contracts/${encodeURIComponent(state.contractId)}/decision`, {
@@ -905,6 +1025,7 @@ async function submitDecision(decision) {
     showToast(error.message, true);
   }
 }
+
 
 function bindEvents() {
   byId("logoutButton").addEventListener("click", async () => {
@@ -934,10 +1055,12 @@ function bindEvents() {
   window.addEventListener("resize", () => drawCashflowChart(state.chartRows));
 }
 
+
 async function init() {
   bindEvents();
   drawCashflowChart([]);
   await loadContracts();
 }
+
 
 document.addEventListener("DOMContentLoaded", init);
