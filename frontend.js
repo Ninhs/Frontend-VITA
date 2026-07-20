@@ -106,10 +106,21 @@ function escapeText(value) {
 async function requestJson(url, options = {}) {
   // Nối API_BASE nếu url là đường dẫn tương đối bắt đầu bằng "/"
   const fullUrl = API_BASE && url.startsWith("/") ? `${API_BASE}${url}` : url;
+<<<<<<< HEAD
+=======
+  const headers = { ...(options.headers || {}) };
+  const hasBody = options.body !== undefined && options.body !== null;
+
+  if (hasBody && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = "application/json";
+  }
+
+>>>>>>> 4c4b4482bf1261dc713e0ccdc20d01b983398ab3
   let response;
   try {
     response = await fetch(fullUrl, {
       ...options,
+<<<<<<< HEAD
       // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
       // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
       // mọi API trả 401 dù đã đăng nhập thành công.
@@ -129,6 +140,13 @@ async function requestJson(url, options = {}) {
       `đang chạy không — mở ${API_BASE || "URL backend"}/health trên trình duyệt; ` +
       `(2) biến ALLOWED_ORIGINS trên Render đã có đúng domain GitHub Pages chưa.`
     );
+=======
+      credentials: "include",
+      headers,
+    });
+  } catch (error) {
+    throw new Error(`Không gọi được backend ${fullUrl}: ${error.message || "Failed to fetch"}`);
+>>>>>>> 4c4b4482bf1261dc713e0ccdc20d01b983398ab3
   }
 
   const rawBody = await response.text();
@@ -485,7 +503,6 @@ function renderDashboard(payload) {
     `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
   ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
-
   const protectiveConditions = data.protectiveConditions.length
     ? data.protectiveConditions
     : data.missingFields.length
