@@ -284,7 +284,16 @@ function normalizePayload(payload) {
     contractValue,
     workflowRunId,
     riskLevel,
-    riskScore: firstDefined(outputs.risk_score, decision.risk_score, finance.risk_score),
+    // outputs.risk_score / transaction_risk_score được Risk & Compliance Agent
+    // tính 0-100 (không phải %). Trước đây field này không được truyền qua
+    // End node nên luôn rơi về 0 — đã vá ở tầng Dify, ở đây chỉ cần đọc đúng key.
+    riskScore: firstDefined(
+      outputs.risk_score,
+      outputs.transaction_risk_score,
+      decision.risk_score,
+      decision.risk_summary?.risk_score,
+      finance.risk_score
+    ),
     requestedAmount: firstDefined(outputs.requested_amount, decision.requested_amount, finance.requested_amount, contract.requested_amount, fundingNeed, 0),
     protectiveConditions: textList(
       outputs.protective_conditions,
@@ -297,6 +306,29 @@ function normalizePayload(payload) {
     openInvoiceAmount: firstDefined(outputs.open_invoice_amount, summary.open_invoice_amount),
     totalRevenue: firstDefined(outputs.total_order_revenue, summary.total_order_revenue, financialSummary.total_order_revenue),
     totalCost: firstDefined(outputs.total_estimated_cost, summary.total_estimated_cost, financialSummary.total_estimated_cost),
+    // Số giao dịch bất thường (RR-001) thực sự cần Founder xử lý — không phải
+    // tổng số cờ + trường thiếu như trước.
+    anomalyTransactionCount: numberValue(
+      firstDefined(outputs.anomaly_transaction_count, decision.anomaly_transaction_count, 0),
+      0
+    ),
+    // Diễn giải vì sao từng cờ được kích hoạt (thay cho việc chỉ đếm số cờ).
+    flagInsights: (() => {
+      const parsed = parseJsonMaybe(outputs.flag_insights_json);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(decision.flag_insights)) return decision.flag_insights;
+      return [];
+    })(),
+    // Công thức + diễn giải confidence_score (0.30 data_completeness + 0.25
+    // finance_calculation + 0.20 evidence_source + 0.15 risk_clarity + 0.10
+    // partner_fit) do Decision & Partner Agent tính.
+    confidenceBreakdown: (() => {
+      const parsed = parseJsonMaybe(outputs.confidence_breakdown_json);
+      if (parsed && typeof parsed === "object" && Object.keys(parsed).length) return parsed;
+      if (decision.confidence_breakdown && typeof decision.confidence_breakdown === "object") return decision.confidence_breakdown;
+      return null;
+    })(),
+    confidenceExplanation: firstDefined(outputs.confidence_explanation, decision.confidence_explanation, ""),
     agentDecision: firstDefined(outputs.agent_decision, decision.agent_decision, decision.recommendation, decision.final_decision, "UNKNOWN"),
     decisionReasons: textList(
       decision.reasons,
@@ -319,8 +351,8 @@ function renderChecks(data) {
     {
       status: data.openInvoiceAmount > 0 ? "ok" : "warning",
       text: data.openInvoiceAmount > 0
-        ? `Hóa đơn mở: ${formatFullMoney(data.openInvoiceAmount)}`
-        : "Chưa phát hiện hóa đơn mở",
+        ? `Hóa đơn chưa thanh toán: ${formatFullMoney(data.openInvoiceAmount)}`
+        : "Chưa phát hiện hóa đơn chưa thanh toán",
     },
     {
       status: data.chartRows.length ? "ok" : "warning",
@@ -328,12 +360,18 @@ function renderChecks(data) {
         ? `Dự báo dòng tiền ${data.chartRows.length} tháng`
         : "Chưa có dữ liệu dự báo dòng tiền",
     },
-    {
-      status: data.flags.length ? "ok" : "warning",
-      text: data.flags.length
-        ? `${data.flags.length} cờ tài chính/rủi ro được kích hoạt`
-        : "Chưa có cờ rủi ro",
-    },
+    // Insight thay cho việc chỉ đếm số cờ: mỗi cờ hiển thị kèm căn cứ kích hoạt.
+    ...(data.flagInsights.length
+      ? data.flagInsights.slice(0, 7).map((item) => ({
+          status: "ok",
+          text: `${item.flag}: ${item.insight}`,
+        }))
+      : [{
+          status: data.flags.length ? "ok" : "warning",
+          text: data.flags.length
+            ? `${data.flags.length} cờ tài chính/rủi ro được kích hoạt: ${data.flags.join(", ")}`
+            : "Chưa có cờ rủi ro",
+        }]),
     ...data.missingFields.map((field) => ({
       status: "error",
       text: `Thiếu hoặc cần nguồn ngoài: ${field}`,
@@ -401,7 +439,9 @@ function renderDashboard(payload) {
     : [
         `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
         `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
-        `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
+        data.monthsBelowReserve.length
+          ? `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; dòng tiền cuối kỳ dự kiến thấp hơn mức dự trữ tối thiểu ở ${data.monthsBelowReserve.length} tháng: ${data.monthsBelowReserve.join(", ")}.`
+          : `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; không có tháng nào dòng tiền dự kiến thấp hơn mức dự trữ tối thiểu.`,
       ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
@@ -427,8 +467,21 @@ function renderDashboard(payload) {
   byId("riskLevel").textContent = Number.isFinite(adjustedRiskScore)
     ? `${riskLabel} (${adjustedRiskScore} điểm${state.riskAdjustment ? ", +2 do bỏ qua dữ liệu" : ""})`
     : riskLabel;
-  byId("confidenceScore").textContent = formatPercent(firstDefined(data.outputs.confidence_score, data.finance.confidence_score), 0);
-  byId("anomalyCount").textContent = String(data.flags.length + data.missingFields.length);
+  // confidenceScore hiển thị ở đây là confidence_score CUỐI CÙNG do Decision &
+  // Partner Agent tổng hợp theo công thức trọng số (0.30 đầy đủ dữ liệu + 0.25
+  // tính toán tài chính + 0.20 nguồn bằng chứng thật + 0.15 độ rõ ràng rủi ro +
+  // 0.10 độ phù hợp đối tác) — KHÔNG phải confidence riêng của 1 agent, và
+  // KHÔNG đo mức độ rủi ro thấp/cao (vì vậy risk cao vẫn có thể đi kèm confidence cao).
+  byId("confidenceScore").textContent = formatPercent(
+    firstDefined(data.outputs.decision_confidence, data.outputs.confidence_score, data.finance.confidence_score),
+    0
+  );
+  byId("confidenceScore").title = data.confidenceExplanation
+    || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
+
+  // Số giao dịch bất thường (RR-001) cần Founder xử lý — thay cho việc đếm
+  // gộp cờ + trường thiếu (vốn không có ý nghĩa nghiệp vụ rõ ràng).
+  byId("anomalyCount").textContent = String(data.anomalyTransactionCount || 0);
 
   const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
   const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
@@ -441,12 +494,14 @@ function renderDashboard(payload) {
   byId("riskAgentIcon").textContent = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "⚠" : "✓";
   byId("decisionAgentIcon").textContent = "✓";
   byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
-  byId("riskAgentText").textContent = data.decisionReasons[1] || `${data.riskLevel} risk; ${data.monthsBelowReserve.length} tháng dưới mức dự trữ.`;
+  byId("riskAgentText").textContent = data.decisionReasons[1]
+    || `${data.riskLevel} risk (${data.anomalyTransactionCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dưới mức dự trữ.`;
   byId("decisionAgentText").textContent = `Khuyến nghị: ${data.agentDecision}${data.recommendedPartner ? ` · ${data.recommendedPartner}` : ""}.`;
 
   byId("financeFlags").innerHTML = data.flags.slice(0, 5).map((flag) => `<span class="tag">${escapeText(flag)}</span>`).join("");
   byId("riskTags").innerHTML = [
     data.riskLevel !== "UNKNOWN" ? `Rủi ro ${data.riskLevel}` : null,
+    data.anomalyTransactionCount ? `${data.anomalyTransactionCount} giao dịch bất thường` : null,
     data.monthsBelowReserve.length ? `Thiếu quỹ ${data.monthsBelowReserve.length} tháng` : null,
   ].filter(Boolean).map((tag) => `<span class="tag">${escapeText(tag)}</span>`).join("");
 
