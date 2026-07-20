@@ -125,6 +125,12 @@ function setLoading(isLoading) {
     byId("workflowStatus").className = "status-pill status-running";
     byId("workflowStatus").textContent = "Đang chạy";
     byId("agentState").textContent = "Đang xử lý";
+    // Xóa các số liệu cũ ngay lập tức để không bị hiểu nhầm là "không đổi"
+    // trong lúc chờ kết quả hợp đồng mới.
+    ["riskLevel", "confidenceScore", "anomalyCount"].forEach((id) => {
+      const el = byId(id);
+      if (el) el.textContent = "…";
+    });
   }
 }
 
@@ -349,40 +355,45 @@ function normalizePayload(payload) {
 }
 
 function renderChecks(data) {
+  // Mục này CHỈ trả lời 1 câu hỏi: hệ thống đọc được đủ dữ liệu cần thiết
+  // cho hợp đồng này chưa (có/không có trong bảng dữ liệu), KHÔNG lẫn với
+  // các cờ rủi ro/tài chính (đã có sẵn ở phần diễn giải văn xuôi của từng
+  // agent) để tránh gây rối cho người đọc.
+  const hasOrderData = numberValue(data.totalRevenue) > 0 || numberValue(data.totalCost) > 0;
   const checks = [
-    { status: "ok", text: `Hợp đồng ${data.contract.contract_id || state.contractId}` },
+    {
+      status: data.contract.contract_id ? "ok" : "error",
+      text: data.contract.contract_id
+        ? `Đã tìm thấy hợp đồng ${data.contract.contract_id} trong bảng contracts.`
+        : `Không tìm thấy hợp đồng ${state.contractId} trong bảng contracts.`,
+    },
+    {
+      status: hasOrderData ? "ok" : "warning",
+      text: hasOrderData
+        ? "Đã đọc được dữ liệu đơn hàng (orders) của hợp đồng."
+        : "Không tìm thấy dữ liệu đơn hàng (orders) cho hợp đồng này.",
+    },
     {
       status: data.openInvoiceAmount > 0 ? "ok" : "warning",
       text: data.openInvoiceAmount > 0
-        ? `Hóa đơn chưa thanh toán: ${formatFullMoney(data.openInvoiceAmount)}`
-        : "Chưa phát hiện hóa đơn chưa thanh toán",
+        ? `Đã đọc được dữ liệu hóa đơn (invoices); còn ${formatFullMoney(data.openInvoiceAmount)} chưa thanh toán.`
+        : "Không có hóa đơn chưa thanh toán, hoặc chưa đọc được dữ liệu hóa đơn.",
     },
     {
       status: data.chartRows.length ? "ok" : "warning",
       text: data.chartRows.length
-        ? `Dự báo dòng tiền ${data.chartRows.length} tháng`
-        : "Chưa có dữ liệu dự báo dòng tiền",
+        ? `Đã đọc được dữ liệu dự báo dòng tiền (cashflow) cho ${data.chartRows.length} tháng.`
+        : "Không tìm thấy dữ liệu dự báo dòng tiền (cashflow) cho hợp đồng này.",
     },
-    // Insight thay cho việc chỉ đếm số cờ: mỗi cờ hiển thị kèm căn cứ kích hoạt.
-    ...(data.flagInsights.length
-      ? data.flagInsights.slice(0, 7).map((item) => ({
-          status: "ok",
-          text: `${item.flag}: ${item.insight}`,
-        }))
-      : [{
-          status: data.flags.length ? "ok" : "warning",
-          text: data.flags.length
-            ? `${data.flags.length} cờ tài chính/rủi ro được kích hoạt: ${data.flags.join(", ")}`
-            : "Chưa có cờ rủi ro",
-        }]),
     ...data.missingFields.map((field) => ({
       status: "error",
-      text: `Thiếu hoặc cần nguồn ngoài: ${field}`,
+      text: `Thiếu trường dữ liệu bắt buộc: ${field}.`,
     })),
   ];
 
   byId("dataChecks").innerHTML = checks.map((item) => `
     <li><span class="dot dot-${item.status}"></span>${escapeText(item.text)}</li>
+
   `).join("");
 }
 
@@ -664,6 +675,12 @@ async function analyzeSelectedContract() {
   const contractId = byId("contractSelect").value.trim().toUpperCase();
   if (!contractId) return showToast("Hãy chọn mã hợp đồng.", true);
 
+  // Reset các state chỉ có ý nghĩa cho LẦN CHẠY TRƯỚC (vd +2 điểm rủi ro do
+  // Founder bỏ qua cảnh báo dữ liệu ở hợp đồng cũ) — nếu không reset, khi đổi
+  // sang hợp đồng khác các con số này sẽ bị cộng dồn sai / trông như "không đổi".
+  state.riskAdjustment = 0;
+  state.decisionId = null;
+  state.decisionPackage = null;
   state.contractId = contractId;
   setLoading(true);
 
