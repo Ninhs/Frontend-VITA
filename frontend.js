@@ -16,6 +16,8 @@ const state = {
   latestPayload: null,
   chartRows: [],
   riskAdjustment: 0,
+  anomalyTransactions: [],
+  anomalyMetricLoaded: false,
 };
 
 
@@ -558,18 +560,6 @@ function renderDashboard(payload) {
     : "—";
 
 
-  // Tooltip chi tiết: mã giao dịch bất thường + risk_score + căn cứ, cộng
-  // các tháng dòng tiền dự kiến âm — giúp Founder biết ngay VÌ SAO điểm cao.
-  const anomalyDetailLines = [
-    ...data.anomalyTransactions.map((t) =>
-      `${t.txn_id} có risk score ${Math.round(numberValue(t.risk_score))}${t.reason ? ` (${t.reason})` : ""}`
-    ),
-    ...(data.monthsBelowReserve.length
-      ? [`Dòng tiền dự kiến ${data.monthsBelowReserve.join(", ")} thấp hơn mức dự trữ tối thiểu.`]
-      : []),
-  ];
-
-
   // confidenceScore hiển thị ở đây là confidence_score CUỐI CÙNG do Decision &
   // Partner Agent tổng hợp theo công thức trọng số (dữ liệu đầy đủ, tính toán
   // tài chính, nguồn bằng chứng thật, độ rõ ràng rủi ro, độ phù hợp đối tác) —
@@ -582,11 +572,9 @@ function renderDashboard(payload) {
     || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
 
 
-  // Số giao dịch bất thường (RR-001) cần Founder xử lý — thay cho việc đếm
-  // gộp cờ + trường thiếu (vốn không có ý nghĩa nghiệp vụ rõ ràng).
-  byId("anomalyCount").textContent = String(data.anomalyTransactionCount || 0);
-  byId("anomalyCount").title = anomalyDetailLines.join("\n");
-
+  // Chỉ số Critical đọc trực tiếp từ bank_transactions qua backend.
+  // Kết quả chạy agent không được phép ghi đè chỉ số cấp OPC này.
+  renderAnomalyMetric();
 
   const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
   const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
@@ -776,6 +764,64 @@ function drawCashflowChart(rows) {
   });
 }
 
+
+function renderAnomalyMetric() {
+  const metric = byId("anomalyCount");
+  if (!state.anomalyMetricLoaded) {
+    metric.textContent = "—";
+    metric.title = "Đang tải giao dịch bất thường từ bank_transactions.";
+    return;
+  }
+
+  const rows = Array.isArray(state.anomalyTransactions)
+    ? state.anomalyTransactions
+    : [];
+  metric.textContent = String(rows.length);
+  metric.title = rows.length
+    ? rows.map((transaction) => {
+        const transactionId = firstDefined(
+          transaction.txn_id,
+          transaction.transaction_id,
+          transaction.id,
+          "Không rõ mã"
+        );
+        const riskScore = numberValue(transaction.risk_score, NaN);
+        const reason = firstDefined(
+          transaction.reason,
+          transaction.description,
+          transaction.risk_reason,
+          transaction.status,
+          ""
+        );
+        const scoreText = Number.isFinite(riskScore)
+          ? " · risk score " + Math.round(riskScore)
+          : "";
+        return transactionId + scoreText + (reason ? " · " + reason : "");
+      }).join("\n")
+    : "Không có giao dịch bất thường trong bank_transactions.";
+}
+
+
+async function loadAnomalyTransactions() {
+  state.anomalyMetricLoaded = false;
+  renderAnomalyMetric();
+
+  try {
+    const response = await requestJson("/api/bank-transactions/anomalies");
+    state.anomalyTransactions = Array.isArray(response.data)
+      ? response.data
+      : [];
+    state.anomalyMetricLoaded = true;
+    renderAnomalyMetric();
+  } catch (error) {
+    state.anomalyTransactions = [];
+    state.anomalyMetricLoaded = false;
+    byId("anomalyCount").textContent = "—";
+    byId("anomalyCount").title =
+      "Không tải được bank_transactions: " + error.message;
+    console.error("Không tải được giao dịch bất thường:", error);
+  }
+}
 
 async function loadContracts() {
   try {
@@ -1059,7 +1105,7 @@ function bindEvents() {
     [
       "paymentReliability", "strategicValue", "grossMargin", "contractValue",
       "fundingNeed", "reserveMinimum", "riskLevel", "confidenceScore",
-      "anomalyCount", "riskScore", "founderRequestedAmount"
+      "riskScore", "founderRequestedAmount"
     ].forEach((id) => { byId(id).textContent = "—"; });
     setProgress("finance", null);
     setProgress("risk", null);
@@ -1078,6 +1124,7 @@ function bindEvents() {
     byId("cashflowViolation").textContent = "";
     byId("rawOutput").textContent = "";
     byId("workflowRunId").textContent = "Workflow run: —";
+    renderAnomalyMetric();
     drawCashflowChart([]);
   });
   document.querySelectorAll("[data-decision]").forEach((button) => {
@@ -1092,7 +1139,10 @@ function bindEvents() {
 async function init() {
   bindEvents();
   drawCashflowChart([]);
-  await loadContracts();
+  await Promise.all([
+    loadContracts(),
+    loadAnomalyTransactions(),
+  ]);
 }
 
 
