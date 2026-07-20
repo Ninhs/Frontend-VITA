@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OPC AI Agent Dashboard</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
-  <link rel="stylesheet" href="style.css">
-  <script src="frontend.js" defer></script>
+  <link rel="stylesheet" href="/UI/style.css">
+  <script src="/UI/frontend.js" defer></script>
+  <script src="/UI/add_contract.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -24,7 +25,7 @@
     <button class="nav-button active" title="Dashboard">
       <i class="fa-solid fa-chart-line" aria-hidden="true"></i>
     </button>
-    <button class="nav-button" title="Thêm mới">＋</button>
+    <button id="sideNavAddBtn" class="nav-button" type="button" title="Thêm mới" aria-label="Thêm hợp đồng mới">＋</button>
     <button class="nav-button" title="Cài đặt">
       <i class="fa-solid fa-gear" aria-hidden="true"></i>
     </button>
@@ -88,8 +89,8 @@
               <strong id="contractValue">—</strong>
             </article>
             <article class="metric-card metric-blue">
-              <span>Khoảng thiếu hụt tiền mặt</span>
-              <small class="metric-caption">Cash gap</small>
+              <span>Nhu cầu vốn cần bổ sung</span>
+              <small class="metric-caption">Funding Need</small>
               <strong id="fundingNeed">—</strong>
             </article>
             <article class="metric-card metric-blue">
@@ -133,13 +134,13 @@
               </article>
               <article>
                 <span>Độ tin cậy</span>
-                <small class="metric-caption">Độ tin cậy của kết quả — không phải mức rủi ro</small>
-                <strong id="confidenceScore" title="0.30×dữ liệu đầy đủ + 0.25×tính toán tài chính + 0.20×nguồn bằng chứng thật + 0.15×độ rõ ràng rủi ro + 0.10×độ phù hợp đối tác">—</strong>
+                <small class="metric-caption">Confidence</small>
+                <strong id="confidenceScore">—</strong>
               </article>
               <article>
-                <span>Giao dịch bất thường</span>
-                <small class="metric-caption">Cần Founder xử lý (RR-001)</small>
-                <strong id="anomalyCount" title="Số giao dịch ngân hàng có risk_score ≥ 85 hoặc gắn nhãn suspicious/fraud, cần Founder xác nhận Hold/Override.">—</strong>
+                <span>Điểm bất thường</span>
+                <small class="metric-caption">Critical</small>
+                <strong id="anomalyCount">—</strong>
               </article>
             </div>
 
@@ -198,6 +199,9 @@
             <span>Độ tin cậy</span><strong id="riskConfidence">—</strong>
           </div>
           <div class="progress progress-warning"><i id="riskProgress"></i></div>
+          <div class="agent-metric-line">
+            <span>Điểm rủi ro</span><strong id="riskScore">—</strong>
+          </div>
           <p id="riskAgentText">Chưa có đánh giá rủi ro.</p>
           <div id="riskTags" class="tag-row"></div>
         </article>
@@ -218,6 +222,9 @@
           <div class="agent-card-title">
             <h3>Founder Approval</h3>
             <span id="approvalState">Đang chờ</span>
+          </div>
+          <div class="agent-metric-line">
+            <span>Số tiền đề nghị</span><strong id="founderRequestedAmount">—</strong>
           </div>
           <p id="approvalText">Chưa xác định yêu cầu phê duyệt.</p>
         </article>
