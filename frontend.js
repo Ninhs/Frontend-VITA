@@ -16,7 +16,29 @@ const state = {
   riskAdjustment: 0,
 };
 
-const byId = (id) => document.getElementById(id);
+const _warnedMissingIds = new Set();
+function _safeStub(id) {
+  // Trả về 1 object "vô hại" khi không tìm thấy #id trong HTML, để
+  // byId("x").textContent = ... / .style.display = ... / .addEventListener(...)
+  // không bao giờ ném lỗi làm dừng render giữa chừng (lỗi 1 chỗ từng khiến
+  // nhiều phần khác của dashboard "đứng hình", không cập nhật theo dữ liệu mới).
+  if (!_warnedMissingIds.has(id)) {
+    _warnedMissingIds.add(id);
+    console.warn(`[UI] Không tìm thấy phần tử #${id} trong HTML — bỏ qua an toàn, không crash trang.`);
+  }
+  const handler = {
+    get(_target, prop) {
+      if (prop === "style" || prop === "classList" || prop === "dataset") return _safeStub(`${id}.${String(prop)}`);
+      if (prop === "addEventListener" || prop === "focus" || prop === "select") return () => {};
+      return undefined;
+    },
+    set() {
+      return true;
+    },
+  };
+  return new Proxy({}, handler);
+}
+const byId = (id) => document.getElementById(id) || _safeStub(id);
 const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== "");
 
 function parseJsonMaybe(value) {
@@ -84,17 +106,30 @@ function escapeText(value) {
 async function requestJson(url, options = {}) {
   // Nối API_BASE nếu url là đường dẫn tương đối bắt đầu bằng "/"
   const fullUrl = API_BASE && url.startsWith("/") ? `${API_BASE}${url}` : url;
-  const response = await fetch(fullUrl, {
-    ...options,
-    // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
-    // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
-    // mọi API trả 401 dù đã đăng nhập thành công.
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetch(fullUrl, {
+      ...options,
+      // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
+      // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
+      // mọi API trả 401 dù đã đăng nhập thành công.
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch (networkError) {
+    // fetch() ném lỗi "Failed to fetch" (không có response nào cả) khi bị
+    // CORS chặn hoặc backend Render không phản hồi được. Đây gần như luôn
+    // là do ALLOWED_ORIGINS trên Render chưa có domain GitHub Pages, hoặc
+    // backend đang sleep/không chạy — KHÔNG phải do sai code frontend.
+    throw new Error(
+      `Không kết nối được tới backend (${fullUrl}). Kiểm tra: (1) Render có ` +
+      `đang chạy không — mở ${API_BASE || "URL backend"}/health trên trình duyệt; ` +
+      `(2) biến ALLOWED_ORIGINS trên Render đã có đúng domain GitHub Pages chưa.`
+    );
+  }
 
   const rawBody = await response.text();
   let body = {};
@@ -107,9 +142,13 @@ async function requestJson(url, options = {}) {
   if (response.status === 401) {
     // Trên GitHub Pages không có middleware server-side chặn truy cập
     // index.html khi chưa đăng nhập -> tự chuyển về login.html ở đây khi
-    // backend báo phiên đăng nhập không hợp lệ/hết hạn.
-    window.location.replace("login.html");
-    throw new Error("Phiên đăng nhập đã hết hạn, đang chuyển về trang đăng nhập.");
+    // backend báo phiên đăng nhập không hợp lệ/hết hạn. Tránh redirect nếu
+    // đang đứng sẵn ở login.html (khỏi lặp trang vô ích).
+    if (!window.location.pathname.endsWith("login.html")) {
+      console.warn("401 từ backend — có thể do cookie chưa được gửi kèm (kiểm tra COOKIE_SAMESITE=none, COOKIE_SECURE=true trên Render).");
+      window.location.replace("login.html");
+    }
+    throw new Error("Phiên đăng nhập không hợp lệ hoặc đã hết hạn.");
   }
 
   if (!response.ok) {
@@ -170,26 +209,14 @@ function normalizePayload(payload) {
 
   const decision = parseJsonMaybe(outputs.decision);
   const finance = parseJsonMaybe(outputs.finance_result);
-  const relatedData = payload.case_data?.related_data || {};
   
   // Tự động map dữ liệu khách hàng vào hợp đồng để lấy Tỉnh, Loại, Điểm tin cậy
   const baseContract = payload.contract || payload.case_data?.contract || {};
   const customers = payload.case_data?.related_data?.customers || [];
   const baseCId = String(baseContract.customer_id || "").trim();
   const matchedCustomer = customers.find(c => String(c.customer_id || "").trim() === baseCId) || customers[0] || {};
-  
+
   const contract = { ...matchedCustomer, ...baseContract };
-  const currentContractId = String(contract.contract_id || state.contractId).trim().toUpperCase();
-  const creditProfiles = Array.isArray(relatedData.credit_profile)
-    ? relatedData.credit_profile
-    : [];
-    
-  // Quét cả ID hoặc chuỗi trong collateral_or_basis
-  const creditProfile = creditProfiles.find((profile) =>
-    String(profile.contract_id || "").trim().toUpperCase() === currentContractId
-  ) || creditProfiles.find((profile) =>
-    String(profile.collateral_or_basis || "").toUpperCase().includes(currentContractId)
-  ) || {};
 
   const financialSummary = finance.financial_summary || {};
   const cashflowSummary = finance.cashflow_summary || {};
@@ -271,22 +298,14 @@ function normalizePayload(payload) {
     cashflowSummary.months_below_reserve,
     []
   );
-  const rr002Output = payload.compliance?.rr_002 || {};
-  const rr002Months = Array.isArray(rr002Output.months)
-    ? rr002Output.months
-    : (Array.isArray(monthsBelowReserve) ? monthsBelowReserve : []);
-  const rr002Description = firstDefined(
-    rr002Output.description,
-    "Dòng tiền cuối kỳ dự kiến thấp hơn mức dự trữ tiền mặt tối thiểu."
-  );
 
   const cashflowRisk = firstDefined(finance.cashflow_risk_level, outputs.risk_level, "UNKNOWN");
   const riskLevel = String(cashflowRisk).toUpperCase();
-  const requestedAmount = firstDefined(creditProfile.requested_amount);
+  const requestedAmount = firstDefined(outputs.requested_amount, decision.requested_amount, finance.requested_amount, contract.requested_amount, fundingNeed, 0);
   const approvalRequired = booleanValue(firstDefined(
     outputs.approval_required,
     decision.approval_required,
-    requestedAmount != null ? numberValue(requestedAmount) > 300_000_000 : false
+    contractValue != null ? numberValue(contractValue) > 300_000_000 : false
   ));
 
   return {
@@ -303,24 +322,33 @@ function normalizePayload(payload) {
     marginGap,
     reserveMinimum,
     fundingNeed,
-    monthsBelowReserve: rr002Months,
-    rr002: {
-      violated: booleanValue(firstDefined(rr002Output.violated, rr002Months.length > 0)),
-      description: rr002Description,
-      months: rr002Months,
-    },
+    monthsBelowReserve: Array.isArray(monthsBelowReserve) ? monthsBelowReserve : [],
     contractValue,
     workflowRunId,
     riskLevel,
-    riskScore: firstDefined(outputs.risk_score, decision.risk_score, finance.risk_score, 0),
+    // outputs.risk_score / transaction_risk_score được Risk & Compliance Agent
+    // tính 0-100 (không phải %). Trước đây field bị thất lạc trước End node
+    // nên luôn về 0 — đã vá ở tầng Dify, ở đây chỉ cần đọc đúng key theo
+    // đúng thứ tự ưu tiên.
+    riskScore: firstDefined(
+      outputs.risk_score,
+      outputs.transaction_risk_score,
+      decision.risk_score,
+      decision.risk_summary?.risk_score,
+      finance.risk_score,
+      0
+    ),
     requestedAmount,
-    protectiveConditions: textList(
+    // outputs.protective_conditions và decision.protective_conditions
+    // thường chứa CÙNG một câu (backend ghi trùng ở 2 chỗ) -> phải loại
+    // trùng ở đây, nếu không câu điều kiện bảo vệ sẽ lặp lại 2 lần.
+    protectiveConditions: [...new Set(textList(
       outputs.protective_conditions,
       outputs.protection_conditions,
       decision.protective_conditions,
       decision.conditions,
       finance.protective_conditions
-    ),
+    ))],
     approvalRequired,
     openInvoiceAmount: firstDefined(outputs.open_invoice_amount, summary.open_invoice_amount),
     totalRevenue: firstDefined(outputs.total_order_revenue, summary.total_order_revenue, financialSummary.total_order_revenue),
@@ -328,33 +356,70 @@ function normalizePayload(payload) {
     agentDecision: firstDefined(outputs.agent_decision, decision.agent_decision, "UNKNOWN"),
     status: firstDefined(outputs.status, decision.status, finance.status, payload.dify_response?.data?.status, "unknown"),
     message: firstDefined(outputs.message, decision.message, finance.message, ""),
+    // Bài phân tích tiếng Việt do OpenAI viết (Data & Finance Agent) — ưu
+    // tiên hiển thị cái này thay vì message chung chung.
+    financeAnalysis: firstDefined(finance.finance_analysis, outputs.finance_analysis, ""),
+    decisionReasons: textList(
+      decision.reasons,
+      [decision.reason_1, decision.reason_2, decision.reason_3].filter(Boolean)
+    ).slice(0, 3),
+    // Số giao dịch bất thường (RR-001) thực sự cần Founder xử lý.
+    anomalyTransactionCount: numberValue(
+      firstDefined(outputs.anomaly_transaction_count, decision.anomaly_transaction_count, 0),
+      0
+    ),
+    // Chi tiết từng giao dịch bất thường: mã GD + risk_score + căn cứ.
+    anomalyTransactions: (() => {
+      const parsed = parseJsonMaybe(outputs.anomaly_transactions_json);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(decision.anomaly_transactions)) return decision.anomaly_transactions;
+      return [];
+    })(),
+    // Diễn giải vì sao từng cờ được kích hoạt (thay cho việc chỉ đếm số cờ).
+    flagInsights: (() => {
+      const parsed = parseJsonMaybe(outputs.flag_insights_json);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(decision.flag_insights)) return decision.flag_insights;
+      return [];
+    })(),
+    confidenceExplanation: firstDefined(outputs.confidence_explanation, decision.confidence_explanation, ""),
   };
 }
 
 function renderChecks(data) {
+  // Mục này CHỈ trả lời 1 câu hỏi: hệ thống đọc được đủ dữ liệu cần thiết
+  // cho hợp đồng này chưa (có/không có trong bảng dữ liệu), KHÔNG lẫn với
+  // các cờ rủi ro/tài chính (đã có ở phần diễn giải văn xuôi của từng agent)
+  // để tránh gây rối cho người đọc.
+  const hasOrderData = numberValue(data.totalRevenue) > 0 || numberValue(data.totalCost) > 0;
   const checks = [
-    { status: "ok", text: `Hợp đồng ${data.contract.contract_id || state.contractId}` },
+    {
+      status: data.contract.contract_id ? "ok" : "error",
+      text: data.contract.contract_id
+        ? `Đã tìm thấy hợp đồng ${data.contract.contract_id} trong bảng contracts.`
+        : `Không tìm thấy hợp đồng ${state.contractId} trong bảng contracts.`,
+    },
+    {
+      status: hasOrderData ? "ok" : "warning",
+      text: hasOrderData
+        ? "Đã đọc được dữ liệu đơn hàng (orders) của hợp đồng."
+        : "Không tìm thấy dữ liệu đơn hàng (orders) cho hợp đồng này.",
+    },
     {
       status: data.openInvoiceAmount > 0 ? "ok" : "warning",
       text: data.openInvoiceAmount > 0
-        ? `Hóa đơn mở: ${formatFullMoney(data.openInvoiceAmount)}`
-        : "Chưa phát hiện hóa đơn mở",
+        ? `Hóa đơn của khách hàng ${firstDefined(data.contract.customer_name, data.contract.customer_id, "—")} (hợp đồng ${state.contractId}): còn ${formatFullMoney(data.openInvoiceAmount)} chưa thanh toán.`
+        : `Khách hàng ${firstDefined(data.contract.customer_name, data.contract.customer_id, "—")} (hợp đồng ${state.contractId}): không có hóa đơn chưa thanh toán, hoặc chưa đọc được dữ liệu hóa đơn.`,
     },
     {
       status: data.chartRows.length ? "ok" : "warning",
       text: data.chartRows.length
-        ? `Dự báo dòng tiền ${data.chartRows.length} tháng`
-        : "Chưa có dữ liệu dự báo dòng tiền",
-    },
-    {
-      status: data.flags.length ? "ok" : "warning",
-      text: data.flags.length
-        ? `${data.flags.length} cờ tài chính/rủi ro được kích hoạt`
-        : "Chưa có cờ rủi ro",
+        ? `Đã đọc được dữ liệu dự báo dòng tiền (cashflow) cho ${data.chartRows.length} tháng.`
+        : "Không tìm thấy dữ liệu dự báo dòng tiền (cashflow) cho hợp đồng này.",
     },
     ...data.missingFields.map((field) => ({
       status: "error",
-      text: `Thiếu hoặc cần nguồn ngoài: ${field}`,
+      text: `Thiếu trường dữ liệu bắt buộc: ${field}.`,
     })),
   ];
 
@@ -412,9 +477,11 @@ function renderDashboard(payload) {
   renderChecks(data);
 
   const marginGapRatio = normalizeRatio(data.marginGap);
-  const findings = [
-    `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
-    `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
+  const findings = data.decisionReasons.length === 3
+    ? data.decisionReasons
+    : [
+        `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
+        `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
     `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
   ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
@@ -429,18 +496,39 @@ function renderDashboard(payload) {
   const recommendations = recommendationList(data);
   byId("recommendations").innerHTML = recommendations.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
-  // Chỉ hiện mức độ Cao/Trung bình/Thấp, KHÔNG hiển thị số điểm ở thẻ Input Data này nữa.
+  // Chỉ hiện mức độ Cao/Trung bình/Thấp kèm điểm số ở thẻ Input Data này.
   const riskLabel = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "Cao" : data.riskLevel === "MEDIUM" ? "Trung bình" : data.riskLevel === "LOW" ? "Thấp" : "Chưa rõ";
-  byId("riskLevel").textContent = riskLabel;
-  
-  // Hiển thị Điểm số rủi ro vào đúng thẻ ID "riskScore" của Risk & Compliance Agent
   const adjustedRiskScore = numberValue(data.riskScore, NaN) + state.riskAdjustment;
-  byId("riskScore").textContent = Number.isFinite(adjustedRiskScore)
-    ? `${new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 }).format(adjustedRiskScore)} điểm`
-    : "—";
+  byId("riskLevel").textContent = Number.isFinite(adjustedRiskScore)
+    ? `${riskLabel} (${adjustedRiskScore} điểm${state.riskAdjustment ? ", +2 do bỏ qua dữ liệu" : ""})`
+    : riskLabel;
 
-  byId("confidenceScore").textContent = formatPercent(firstDefined(data.outputs.confidence_score, data.finance.confidence_score), 0);
-  byId("anomalyCount").textContent = String(data.flags.length + data.missingFields.length);
+  // Tooltip chi tiết: mã giao dịch bất thường + risk_score + căn cứ, cộng
+  // các tháng dòng tiền dự kiến âm — giúp Founder biết ngay VÌ SAO điểm cao.
+  const anomalyDetailLines = [
+    ...data.anomalyTransactions.map((t) =>
+      `${t.txn_id} có risk score ${Math.round(numberValue(t.risk_score))}${t.reason ? ` (${t.reason})` : ""}`
+    ),
+    ...(data.monthsBelowReserve.length
+      ? [`Dòng tiền dự kiến ${data.monthsBelowReserve.join(", ")} thấp hơn mức dự trữ tối thiểu.`]
+      : []),
+  ];
+
+  // confidenceScore hiển thị ở đây là confidence_score CUỐI CÙNG do Decision &
+  // Partner Agent tổng hợp theo công thức trọng số (dữ liệu đầy đủ, tính toán
+  // tài chính, nguồn bằng chứng thật, độ rõ ràng rủi ro, độ phù hợp đối tác) —
+  // KHÔNG đo mức độ rủi ro thấp/cao, nên risk cao vẫn có thể đi kèm confidence cao.
+  byId("confidenceScore").textContent = formatPercent(
+    firstDefined(data.outputs.decision_confidence, data.outputs.confidence_score, data.finance.confidence_score),
+    0
+  );
+  byId("confidenceScore").title = data.confidenceExplanation
+    || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
+
+  // Số giao dịch bất thường (RR-001) cần Founder xử lý — thay cho việc đếm
+  // gộp cờ + trường thiếu (vốn không có ý nghĩa nghiệp vụ rõ ràng).
+  byId("anomalyCount").textContent = String(data.anomalyTransactionCount || 0);
+  byId("anomalyCount").title = anomalyDetailLines.join("\n");
 
   const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
   const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
@@ -452,26 +540,27 @@ function renderDashboard(payload) {
   byId("financeAgentIcon").textContent = "✓";
   byId("riskAgentIcon").textContent = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "⚠" : "✓";
   byId("decisionAgentIcon").textContent = "✓";
-  byId("financeAgentText").textContent = data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
-  
-  // Hiển thị trực tiếp lỗi RR-002 trên thẻ Risk & Compliance Agent
-  byId("riskAgentText").textContent = data.rr002.violated
-    ? `Vi phạm RR-002 (${data.rr002.description}) tại các tháng: ${data.rr002.months.join(", ")}`
-    : "Không vi phạm quy tắc RR-002.";
-    
+  byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
+
+  // Diễn giải rủi ro bằng lý do thật từ backend; fallback nêu rõ số giao
+  // dịch bất thường thật (không phải đếm gộp cờ + trường thiếu).
+  byId("riskAgentText").textContent = data.decisionReasons[1]
+    || `${riskLabel} rủi ro (${data.anomalyTransactionCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dòng tiền dưới mức dự trữ.`;
+
   byId("decisionAgentText").textContent = `Quyết định: ${data.agentDecision}.`;
 
-  byId("financeFlags").innerHTML = data.flags.slice(0, 5).map((flag) => `<span class="tag">${escapeText(flag)}</span>`).join("");
-  byId("riskTags").innerHTML = [
-    data.riskLevel !== "UNKNOWN" ? `Rủi ro ${data.riskLevel}` : null,
-    data.monthsBelowReserve.length ? `Thiếu quỹ ${data.monthsBelowReserve.length} tháng` : null,
-  ].filter(Boolean).map((tag) => `<span class="tag">${escapeText(tag)}</span>`).join("");
+  // Theo yêu cầu: không hiển thị dãy tag mã cờ thô (WORKING_CAPITAL_REQUIRED,
+  // RR-002_CASH_BELOW_RESERVE...) trên Agent Workflow — chỉ giữ lại phần văn
+  // xuôi ở financeAgentText/riskAgentText phía trên. Mã cờ + insight vẫn còn
+  // đầy đủ ở mục "Kiểm tra dữ liệu" (renderChecks) cho ai cần xem chi tiết.
+  byId("financeFlags").innerHTML = "";
+  byId("financeFlags").style.display = "none";
+  byId("riskTags").innerHTML = "";
+  byId("riskTags").style.display = "none";
 
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
-  byId("founderRequestedAmount").textContent = formatFullMoney(data.requestedAmount);
-  
+
   const requestedAmountNumber = numberValue(data.requestedAmount, NaN);
-  // Hiển thị dòng giải thích, bỏ chữ "Từ 10_CREDIT_PROFILE"
   byId("approvalText").textContent = !Number.isFinite(requestedAmountNumber)
     ? "Chưa lấy được dữ liệu requested_amount."
     : requestedAmountNumber > 300_000_000
@@ -480,9 +569,9 @@ function renderDashboard(payload) {
         ? `${formatMoney(data.requestedAmount)} — Yêu cầu phê duyệt theo Workflow.`
         : `${formatMoney(data.requestedAmount)} (Không vượt ngưỡng 300 triệu).`;
 
-  byId("cashflowViolation").textContent = data.rr002.violated
-    ? `⚠️ VI PHẠM RR-002: ${data.rr002.description}\nTháng ghi nhận: ${data.rr002.months.join(", ")}`
-    : "✅ KHÔNG VI PHẠM RR-002: Dòng tiền an toàn.";
+  byId("cashflowViolation").textContent = data.monthsBelowReserve.length
+    ? `⚠ Vi phạm RR-002 — ${data.monthsBelowReserve.join(", ")}`
+    : "Không phát hiện tháng dưới mức dự trữ.";
 
   byId("rawOutput").textContent = JSON.stringify(data.outputs, null, 2);
   byId("workflowRunId").textContent = `Workflow run: ${data.workflowRunId || "—"}`;
