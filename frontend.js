@@ -225,6 +225,39 @@ function textList(...values) {
 }
 
 
+
+function normalizeCashflowRows(value) {
+  const parsed = parseJsonMaybe(value);
+  const rows = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === "object"
+      ? parseJsonMaybe(parsed.monthly_summary)
+      : [];
+
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const nested = parseJsonMaybe(row.monthly_summary);
+    return Array.isArray(nested) ? nested : [row];
+  });
+}
+
+function cashflowClosing(row) {
+  return numberValue(firstDefined(
+    row.projected_closing_cash,
+    row.closing_cash,
+    row.balance
+  ), NaN);
+}
+
+function cashflowReserve(row) {
+  return numberValue(firstDefined(
+    row.cash_reserve_minimum,
+    row.reserve_minimum,
+    row.minimum_reserve
+  ), NaN);
+}
+
 function normalizePayload(payload) {
   const outputs = payload.outputs
     || payload.data?.outputs
@@ -250,12 +283,13 @@ function normalizePayload(payload) {
   const summary = decision.summary || {};
 
 
-  const chartRows = firstDefined(
+  const chartRows = normalizeCashflowRows(firstDefined(
     cashflowSummary.monthly_summary,
     outputs.monthly_summary,
+    payload.case_data?.related_data?.cashflow,
     payload.case_data?.related_data?.cashflow_forecasts,
     []
-  );
+  ));
 
 
   const flags = unionFlags(
@@ -295,7 +329,7 @@ function normalizePayload(payload) {
 
 
   const reserveMinimum = firstDefined(
-    chartRows?.[0]?.cash_reserve_minimum,
+    chartRows.map(cashflowReserve).find(Number.isFinite),
     contract.cash_reserve_minimum,
     contract.reserve_minimum
   );
@@ -307,10 +341,13 @@ function normalizePayload(payload) {
     || null;
 
 
+  const relatedData = payload.case_data?.related_data || {};
   const missingFields = unionFlags(
     outputs.missing_fields,
     decision.missing_fields,
-    decision.external_reasons
+    decision.external_reasons,
+    Array.isArray(relatedData.orders) && !relatedData.orders.length ? ["orders"] : [],
+    Array.isArray(relatedData.cashflow) && !relatedData.cashflow.length ? ["cashflow"] : []
   );
 
 
@@ -321,31 +358,85 @@ function normalizePayload(payload) {
   );
 
 
+  const derivedFundingNeed = chartRows.reduce((maximum, row) => {
+    const reserve = cashflowReserve(row);
+    const closing = cashflowClosing(row);
+    if (!Number.isFinite(reserve) || !Number.isFinite(closing)) return maximum;
+    return Math.max(maximum, reserve - closing, 0);
+  }, 0);
+
   const fundingNeed = firstDefined(
     outputs.maximum_funding_need,
     summary.maximum_funding_need,
     finance.funding_need,
-    cashflowSummary.maximum_funding_need
+    cashflowSummary.maximum_funding_need,
+    derivedFundingNeed
   );
 
+  const derivedMonthsBelowReserve = chartRows
+    .filter((row) => {
+      const reserve = cashflowReserve(row);
+      const closing = cashflowClosing(row);
+      return Number.isFinite(reserve) && Number.isFinite(closing) && closing < reserve;
+    })
+    .map((row, index) => row.month || row.period || "T" + (index + 1));
 
-  const monthsBelowReserve = firstDefined(
+  const reportedMonthsBelowReserve = firstDefined(
     outputs.months_below_reserve,
     summary.months_below_reserve,
     finance.months_below_reserve,
-    cashflowSummary.months_below_reserve,
-    []
+    cashflowSummary.months_below_reserve
   );
+  const monthsBelowReserve = Array.isArray(reportedMonthsBelowReserve) && reportedMonthsBelowReserve.length
+    ? reportedMonthsBelowReserve
+    : derivedMonthsBelowReserve;
 
-
-  const cashflowRisk = firstDefined(finance.cashflow_risk_level, outputs.risk_level, "UNKNOWN");
-  const riskLevel = String(cashflowRisk).toUpperCase();
+  const reportedRisk = String(firstDefined(
+    finance.cashflow_risk_level,
+    outputs.risk_level,
+    decision.risk_level,
+    "UNKNOWN"
+  )).toUpperCase();
+  const derivedRisk = derivedMonthsBelowReserve.length >= 2
+    ? "HIGH"
+    : derivedMonthsBelowReserve.length || (normalizeRatio(marginGap) ?? 0) < 0
+      ? "MEDIUM"
+      : "LOW";
+  const riskLevel = reportedRisk === "UNKNOWN" || reportedRisk === ""
+    ? derivedRisk
+    : reportedRisk;
   const requestedAmount = firstDefined(outputs.requested_amount, decision.requested_amount, finance.requested_amount, contract.requested_amount, fundingNeed, 0);
   const approvalRequired = booleanValue(firstDefined(
     outputs.approval_required,
     decision.approval_required,
     contractValue != null ? numberValue(contractValue) > 300_000_000 : false
   ));
+
+  const hasOrderTotals = [
+    outputs.total_order_revenue,
+    summary.total_order_revenue,
+    financialSummary.total_order_revenue,
+    outputs.total_estimated_cost,
+    summary.total_estimated_cost,
+    financialSummary.total_estimated_cost
+  ].some((value) => Number.isFinite(numberValue(value, NaN)));
+  const hasWorkflowResult = Boolean(workflowRunId)
+    && String(firstDefined(payload.dify_response?.data?.status, outputs.status, "")).toLowerCase() !== "failed";
+  const derivedConfidence = Math.min(1,
+    0.30
+    + (chartRows.length ? 0.35 : 0)
+    + (hasOrderTotals ? 0.20 : 0)
+    + (hasWorkflowResult ? 0.15 : 0)
+  );
+  const anomalyCountForRisk = Math.max(
+    numberValue(firstDefined(outputs.anomaly_transaction_count, decision.anomaly_transaction_count, 0), 0),
+    Array.isArray(state.anomalyTransactions) ? state.anomalyTransactions.length : 0
+  );
+  const derivedRiskScore = Math.min(100,
+    Math.min(60, derivedMonthsBelowReserve.length * 12)
+    + ((normalizeRatio(marginGap) ?? 0) < 0 ? 20 : 0)
+    + Math.min(20, anomalyCountForRisk * 10)
+  );
 
 
   return {
@@ -376,7 +467,14 @@ function normalizePayload(payload) {
       decision.risk_score,
       decision.risk_summary?.risk_score,
       finance.risk_score,
-      0
+      derivedRiskScore
+    ),
+    confidenceScore: firstDefined(
+      outputs.decision_confidence,
+      decision.confidence_score,
+      outputs.confidence_score,
+      finance.confidence_score,
+      derivedConfidence
     ),
     requestedAmount,
     // outputs.protective_conditions và decision.protective_conditions
@@ -482,6 +580,9 @@ function recommendationList(data) {
   if (numberValue(data.fundingNeed) > 0) {
     items.push(`Chuẩn bị phương án vốn lưu động tối đa ${formatMoney(data.fundingNeed)}.`);
   }
+  if (data.monthsBelowReserve.length) {
+    items.push(`Bổ sung nguồn vốn trước các tháng ${data.monthsBelowReserve.join(", ")} để tiền cuối kỳ không thấp hơn ${formatMoney(data.reserveMinimum)}.`);
+  }
   if (data.missingFields.length) {
     items.push(`Bổ sung dữ liệu: ${data.missingFields.join(", ")}.`);
   }
@@ -526,20 +627,37 @@ function renderDashboard(payload) {
 
 
   const marginGapRatio = normalizeRatio(data.marginGap);
-  const findings = data.decisionReasons.length === 3
-    ? data.decisionReasons
-    : [
-        `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
-        `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
-    `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
+  const fallbackFindings = [
+    Number.isFinite(numberValue(data.totalRevenue, NaN)) || Number.isFinite(numberValue(data.totalCost, NaN))
+      ? `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`
+      : "Chưa có dữ liệu orders để tính tổng doanh thu và chi phí.",
+    `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
+    data.chartRows.length
+      ? `Dòng tiền thực tế theo ${data.chartRows.length} tháng: nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}, dự trữ tối thiểu ${formatMoney(data.reserveMinimum)}, ${data.monthsBelowReserve.length} tháng dưới ngưỡng.`
+      : "Chưa có dữ liệu cashflow để đánh giá nhu cầu vốn và mức dự trữ."
   ];
+  const findings = data.decisionReasons.length
+    ? [...data.decisionReasons, ...fallbackFindings].slice(0, 3)
+    : fallbackFindings;
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
 
+  const derivedProtectiveConditions = [];
+  if (data.monthsBelowReserve.length) {
+    derivedProtectiveConditions.push(
+      `Duy trì tiền cuối kỳ tối thiểu ${formatMoney(data.reserveMinimum)}; bố trí tối đa ${formatMoney(data.fundingNeed)} trước các tháng ${data.monthsBelowReserve.join(", ")}.`
+    );
+  }
+  if ((marginGapRatio ?? 0) < 0) {
+    derivedProtectiveConditions.push("Chỉ ký sau khi có phương án cải thiện biên lợi nhuận đạt mục tiêu.");
+  }
+  if (data.missingFields.length) {
+    derivedProtectiveConditions.push(`Bổ sung dữ liệu: ${data.missingFields.join(", ")}.`);
+  }
   const protectiveConditions = data.protectiveConditions.length
     ? data.protectiveConditions
-    : data.missingFields.length
-      ? [`Chỉ xem xét lại hợp đồng sau khi bổ sung: ${data.missingFields.join(", ")}.`]
+    : derivedProtectiveConditions.length
+      ? derivedProtectiveConditions
       : ["Tiếp tục giám sát dòng tiền và tuân thủ các điều kiện đã phê duyệt."];
   byId("protectiveConditions").textContent = protectiveConditions.join(" ");
 
@@ -564,10 +682,7 @@ function renderDashboard(payload) {
   // Partner Agent tổng hợp theo công thức trọng số (dữ liệu đầy đủ, tính toán
   // tài chính, nguồn bằng chứng thật, độ rõ ràng rủi ro, độ phù hợp đối tác) —
   // KHÔNG đo mức độ rủi ro thấp/cao, nên risk cao vẫn có thể đi kèm confidence cao.
-  byId("confidenceScore").textContent = formatPercent(
-    firstDefined(data.outputs.decision_confidence, data.outputs.confidence_score, data.finance.confidence_score),
-    0
-  );
+  byId("confidenceScore").textContent = formatPercent(data.confidenceScore, 0);
   byId("confidenceScore").title = data.confidenceExplanation
     || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
 
@@ -576,9 +691,9 @@ function renderDashboard(payload) {
   // Kết quả chạy agent không được phép ghi đè chỉ số cấp OPC này.
   renderAnomalyMetric();
 
-  const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
-  const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
-  const decisionConfidence = firstDefined(data.outputs.decision_confidence, data.decision.confidence_score, data.outputs.confidence_score);
+  const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score, data.confidenceScore);
+  const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score, data.confidenceScore);
+  const decisionConfidence = firstDefined(data.outputs.decision_confidence, data.decision.confidence_score, data.outputs.confidence_score, data.confidenceScore);
   setProgress("finance", financeConfidence);
   setProgress("risk", riskConfidence);
   setProgress("decision", decisionConfidence);
@@ -592,8 +707,12 @@ function renderDashboard(payload) {
 
   // Diễn giải rủi ro bằng lý do thật từ backend; fallback nêu rõ số giao
   // dịch bất thường thật (không phải đếm gộp cờ + trường thiếu).
+  const displayedAnomalyCount = Math.max(
+    data.anomalyTransactionCount,
+    Array.isArray(state.anomalyTransactions) ? state.anomalyTransactions.length : 0
+  );
   byId("riskAgentText").textContent = data.decisionReasons[1]
-    || `${riskLabel} rủi ro (${data.anomalyTransactionCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dòng tiền dưới mức dự trữ.`;
+    || `${riskLabel} rủi ro (${displayedAnomalyCount} giao dịch bất thường); ${data.monthsBelowReserve.length} tháng dòng tiền dưới mức dự trữ.`;
 
 
   byId("decisionAgentText").textContent = `Quyết định: ${data.agentDecision}.`;
