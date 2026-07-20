@@ -1,5 +1,14 @@
 "use strict";
 
+// ============================================================================
+// CẤU HÌNH BACKEND — frontend chạy trên GitHub Pages, backend chạy trên Render,
+// nên MỌI lệnh gọi API phải trỏ tuyệt đối sang domain Render, không dùng
+// đường dẫn tương đối "/api/..." (đường dẫn tương đối sẽ gọi nhầm vào chính
+// domain GitHub Pages, nơi không chạy backend).
+// SỬA DÒNG NÀY thành đúng URL Render của bạn, KHÔNG có dấu "/" ở cuối.
+const API_BASE = "https://backend-vita.onrender.com";
+// ============================================================================
+
 const state = {
   contractId: "CON-004",
   latestPayload: null,
@@ -73,8 +82,14 @@ function escapeText(value) {
 }
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
+  // Nối API_BASE nếu url là đường dẫn tương đối bắt đầu bằng "/"
+  const fullUrl = API_BASE && url.startsWith("/") ? `${API_BASE}${url}` : url;
+  const response = await fetch(fullUrl, {
     ...options,
+    // Bắt buộc khi frontend/backend khác domain: nếu không có dòng này,
+    // cookie đăng nhập (vita_session) sẽ KHÔNG được gửi kèm request, khiến
+    // mọi API trả 401 dù đã đăng nhập thành công.
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(options.headers || {}),
@@ -87,6 +102,14 @@ async function requestJson(url, options = {}) {
     body = rawBody ? JSON.parse(rawBody) : {};
   } catch {
     body = { detail: rawBody || `HTTP ${response.status}` };
+  }
+
+  if (response.status === 401) {
+    // Trên GitHub Pages không có middleware server-side chặn truy cập
+    // index.html khi chưa đăng nhập -> tự chuyển về login.html ở đây khi
+    // backend báo phiên đăng nhập không hợp lệ/hết hạn.
+    window.location.replace("login.html");
+    throw new Error("Phiên đăng nhập đã hết hạn, đang chuyển về trang đăng nhập.");
   }
 
   if (!response.ok) {
@@ -104,12 +127,6 @@ function setLoading(isLoading) {
     byId("workflowStatus").className = "status-pill status-running";
     byId("workflowStatus").textContent = "Đang chạy";
     byId("agentState").textContent = "Đang xử lý";
-    // Xóa các số liệu cũ ngay lập tức để không bị hiểu nhầm là "không đổi"
-    // trong lúc chờ kết quả hợp đồng mới.
-    ["riskLevel", "riskScore", "confidenceScore", "anomalyCount"].forEach((id) => {
-      const el = byId(id);
-      if (el) el.textContent = "…";
-    });
   }
 }
 
@@ -295,29 +312,15 @@ function normalizePayload(payload) {
     contractValue,
     workflowRunId,
     riskLevel,
-    // outputs.risk_score / transaction_risk_score được Risk & Compliance Agent
-    // tính 0-100 (không phải %). Trước đây field bị thất lạc trước End node
-    // nên luôn về 0 — đã vá ở tầng Dify, ở đây chỉ cần đọc đúng key theo
-    // đúng thứ tự ưu tiên.
-    riskScore: firstDefined(
-      outputs.risk_score,
-      outputs.transaction_risk_score,
-      decision.risk_score,
-      decision.risk_summary?.risk_score,
-      finance.risk_score,
-      0
-    ),
+    riskScore: firstDefined(outputs.risk_score, decision.risk_score, finance.risk_score, 0),
     requestedAmount,
-    // outputs.protective_conditions và decision.protective_conditions
-    // thường chứa CÙNG một câu (do backend ghi trùng ở 2 chỗ) -> phải loại
-    // trùng ở đây, nếu không câu điều kiện bảo vệ sẽ lặp lại 2 lần.
-    protectiveConditions: [...new Set(textList(
+    protectiveConditions: textList(
       outputs.protective_conditions,
       outputs.protection_conditions,
       decision.protective_conditions,
       decision.conditions,
       finance.protective_conditions
-    ))],
+    ),
     approvalRequired,
     openInvoiceAmount: firstDefined(outputs.open_invoice_amount, summary.open_invoice_amount),
     totalRevenue: firstDefined(outputs.total_order_revenue, summary.total_order_revenue, financialSummary.total_order_revenue),
@@ -325,70 +328,33 @@ function normalizePayload(payload) {
     agentDecision: firstDefined(outputs.agent_decision, decision.agent_decision, "UNKNOWN"),
     status: firstDefined(outputs.status, decision.status, finance.status, payload.dify_response?.data?.status, "unknown"),
     message: firstDefined(outputs.message, decision.message, finance.message, ""),
-    // Bài phân tích tiếng Việt do OpenAI viết (Data & Finance Agent) — ưu
-    // tiên hiển thị cái này thay vì message chung chung.
-    financeAnalysis: firstDefined(finance.finance_analysis, outputs.finance_analysis, ""),
-    decisionReasons: textList(
-      decision.reasons,
-      [decision.reason_1, decision.reason_2, decision.reason_3].filter(Boolean)
-    ).slice(0, 3),
-    // Số giao dịch bất thường (RR-001) thực sự cần Founder xử lý.
-    anomalyTransactionCount: numberValue(
-      firstDefined(outputs.anomaly_transaction_count, decision.anomaly_transaction_count, 0),
-      0
-    ),
-    // Chi tiết từng giao dịch bất thường: mã GD + risk_score + căn cứ.
-    anomalyTransactions: (() => {
-      const parsed = parseJsonMaybe(outputs.anomaly_transactions_json);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
-      if (Array.isArray(decision.anomaly_transactions)) return decision.anomaly_transactions;
-      return [];
-    })(),
-    // Diễn giải vì sao từng cờ được kích hoạt (thay cho việc chỉ đếm số cờ).
-    flagInsights: (() => {
-      const parsed = parseJsonMaybe(outputs.flag_insights_json);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
-      if (Array.isArray(decision.flag_insights)) return decision.flag_insights;
-      return [];
-    })(),
-    confidenceExplanation: firstDefined(outputs.confidence_explanation, decision.confidence_explanation, ""),
   };
 }
 
 function renderChecks(data) {
-  // Mục này CHỈ trả lời 1 câu hỏi: hệ thống đọc được đủ dữ liệu cần thiết
-  // cho hợp đồng này chưa (có/không có trong bảng dữ liệu), KHÔNG lẫn với
-  // các cờ rủi ro/tài chính (đã có ở phần diễn giải văn xuôi của từng agent)
-  // để tránh gây rối cho người đọc.
-  const hasOrderData = numberValue(data.totalRevenue) > 0 || numberValue(data.totalCost) > 0;
   const checks = [
-    {
-      status: data.contract.contract_id ? "ok" : "error",
-      text: data.contract.contract_id
-        ? `Đã tìm thấy hợp đồng ${data.contract.contract_id} trong bảng contracts.`
-        : `Không tìm thấy hợp đồng ${state.contractId} trong bảng contracts.`,
-    },
-    {
-      status: hasOrderData ? "ok" : "warning",
-      text: hasOrderData
-        ? "Đã đọc được dữ liệu đơn hàng (orders) của hợp đồng."
-        : "Không tìm thấy dữ liệu đơn hàng (orders) cho hợp đồng này.",
-    },
+    { status: "ok", text: `Hợp đồng ${data.contract.contract_id || state.contractId}` },
     {
       status: data.openInvoiceAmount > 0 ? "ok" : "warning",
       text: data.openInvoiceAmount > 0
-        ? `Đã đọc được dữ liệu hóa đơn (invoices); còn ${formatFullMoney(data.openInvoiceAmount)} chưa thanh toán.`
-        : "Không có hóa đơn chưa thanh toán, hoặc chưa đọc được dữ liệu hóa đơn.",
+        ? `Hóa đơn mở: ${formatFullMoney(data.openInvoiceAmount)}`
+        : "Chưa phát hiện hóa đơn mở",
     },
     {
       status: data.chartRows.length ? "ok" : "warning",
       text: data.chartRows.length
-        ? `Đã đọc được dữ liệu dự báo dòng tiền (cashflow) cho ${data.chartRows.length} tháng.`
-        : "Không tìm thấy dữ liệu dự báo dòng tiền (cashflow) cho hợp đồng này.",
+        ? `Dự báo dòng tiền ${data.chartRows.length} tháng`
+        : "Chưa có dữ liệu dự báo dòng tiền",
+    },
+    {
+      status: data.flags.length ? "ok" : "warning",
+      text: data.flags.length
+        ? `${data.flags.length} cờ tài chính/rủi ro được kích hoạt`
+        : "Chưa có cờ rủi ro",
     },
     ...data.missingFields.map((field) => ({
       status: "error",
-      text: `Thiếu trường dữ liệu bắt buộc: ${field}.`,
+      text: `Thiếu hoặc cần nguồn ngoài: ${field}`,
     })),
   ];
 
@@ -446,13 +412,11 @@ function renderDashboard(payload) {
   renderChecks(data);
 
   const marginGapRatio = normalizeRatio(data.marginGap);
-  const findings = data.decisionReasons.length === 3
-    ? data.decisionReasons
-    : [
-        `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
-        `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
-        `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
-      ];
+  const findings = [
+    `Doanh thu ${formatMoney(data.totalRevenue)}, chi phí ${formatMoney(data.totalCost)}.`,
+    `Biên lợi nhuận ${formatPercent(data.computedMargin)} so với mục tiêu ${formatPercent(data.targetMargin)}; chênh lệch ${marginGapRatio === null ? "—" : `${(marginGapRatio * 100).toFixed(1)} điểm %`}.`,
+    `Nhu cầu vốn tối đa ${formatMoney(data.fundingNeed)}; ${data.monthsBelowReserve.length} tháng thấp hơn mức dự trữ.`,
+  ];
   byId("keyFindings").innerHTML = findings.map((text) => `<li>${escapeText(text)}</li>`).join("");
 
   const protectiveConditions = data.protectiveConditions.length
@@ -468,39 +432,15 @@ function renderDashboard(payload) {
   // Chỉ hiện mức độ Cao/Trung bình/Thấp, KHÔNG hiển thị số điểm ở thẻ Input Data này nữa.
   const riskLabel = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "Cao" : data.riskLevel === "MEDIUM" ? "Trung bình" : data.riskLevel === "LOW" ? "Thấp" : "Chưa rõ";
   byId("riskLevel").textContent = riskLabel;
-
+  
   // Hiển thị Điểm số rủi ro vào đúng thẻ ID "riskScore" của Risk & Compliance Agent
   const adjustedRiskScore = numberValue(data.riskScore, NaN) + state.riskAdjustment;
   byId("riskScore").textContent = Number.isFinite(adjustedRiskScore)
     ? `${new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 }).format(adjustedRiskScore)} điểm`
     : "—";
-  // Tooltip chi tiết: mã giao dịch bất thường + risk_score + căn cứ, cộng
-  // các tháng dòng tiền dự kiến âm — giúp Founder biết ngay VÌ SAO điểm cao.
-  const anomalyDetailLines = [
-    ...data.anomalyTransactions.map((t) =>
-      `${t.txn_id} có risk score ${Math.round(numberValue(t.risk_score))}${t.reason ? ` (${t.reason})` : ""}`
-    ),
-    ...(data.monthsBelowReserve.length
-      ? [`Dòng tiền dự kiến ${data.monthsBelowReserve.join(", ")} thấp hơn mức dự trữ tối thiểu.`]
-      : []),
-  ];
-  byId("riskScore").title = anomalyDetailLines.join("\n");
 
-  // confidenceScore hiển thị ở đây là confidence_score CUỐI CÙNG do Decision &
-  // Partner Agent tổng hợp theo công thức trọng số (dữ liệu đầy đủ, tính toán
-  // tài chính, nguồn bằng chứng thật, độ rõ ràng rủi ro, độ phù hợp đối tác) —
-  // KHÔNG đo mức độ rủi ro thấp/cao, nên risk cao vẫn có thể đi kèm confidence cao.
-  byId("confidenceScore").textContent = formatPercent(
-    firstDefined(data.outputs.decision_confidence, data.outputs.confidence_score, data.finance.confidence_score),
-    0
-  );
-  byId("confidenceScore").title = data.confidenceExplanation
-    || "Độ tin cậy của KẾT QUẢ (dữ liệu đủ, tính toán đúng nguồn, bằng chứng thật, rủi ro rõ ràng, đối tác phù hợp) — không phải mức độ rủi ro thấp hay cao.";
-
-  // Số giao dịch bất thường (RR-001) cần Founder xử lý — thay cho việc đếm
-  // gộp cờ + trường thiếu (vốn không có ý nghĩa nghiệp vụ rõ ràng).
-  byId("anomalyCount").textContent = String(data.anomalyTransactionCount || 0);
-  byId("anomalyCount").title = anomalyDetailLines.join("\n");
+  byId("confidenceScore").textContent = formatPercent(firstDefined(data.outputs.confidence_score, data.finance.confidence_score), 0);
+  byId("anomalyCount").textContent = String(data.flags.length + data.missingFields.length);
 
   const financeConfidence = firstDefined(data.outputs.finance_confidence, data.finance.confidence_score, data.outputs.confidence_score);
   const riskConfidence = firstDefined(data.outputs.risk_confidence, data.outputs.confidence_score);
@@ -512,24 +452,20 @@ function renderDashboard(payload) {
   byId("financeAgentIcon").textContent = "✓";
   byId("riskAgentIcon").textContent = data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL" ? "⚠" : "✓";
   byId("decisionAgentIcon").textContent = "✓";
-  byId("financeAgentText").textContent = data.financeAnalysis || data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
-
-  // Hiển thị trực tiếp lỗi RR-002 trên thẻ Risk & Compliance Agent, kèm số
-  // giao dịch bất thường thật (không phải đếm gộp cờ + trường thiếu).
-  byId("riskAgentText").textContent = data.decisionReasons[1]
-    || (data.rr002.violated
-      ? `Vi phạm RR-002 (${data.rr002.description}) tại các tháng: ${data.rr002.months.join(", ")}; ${data.anomalyTransactionCount} giao dịch bất thường cần Founder xử lý.`
-      : `Không vi phạm quy tắc RR-002; ${data.anomalyTransactionCount} giao dịch bất thường cần Founder xử lý.`);
-
+  byId("financeAgentText").textContent = data.message || `Đã tính toán tài chính cho ${state.contractId}.`;
+  
+  // Hiển thị trực tiếp lỗi RR-002 trên thẻ Risk & Compliance Agent
+  byId("riskAgentText").textContent = data.rr002.violated
+    ? `Vi phạm RR-002 (${data.rr002.description}) tại các tháng: ${data.rr002.months.join(", ")}`
+    : "Không vi phạm quy tắc RR-002.";
+    
   byId("decisionAgentText").textContent = `Quyết định: ${data.agentDecision}.`;
 
-  // Theo yêu cầu: không hiển thị dãy tag mã cờ thô (WORKING_CAPITAL_REQUIRED,
-  // RR-002_CASH_BELOW_RESERVE...) trên Agent Workflow — chỉ giữ lại phần văn
-  // xuôi ở financeAgentText/riskAgentText phía trên.
-  byId("financeFlags").innerHTML = "";
-  byId("financeFlags").style.display = "none";
-  byId("riskTags").innerHTML = "";
-  byId("riskTags").style.display = "none";
+  byId("financeFlags").innerHTML = data.flags.slice(0, 5).map((flag) => `<span class="tag">${escapeText(flag)}</span>`).join("");
+  byId("riskTags").innerHTML = [
+    data.riskLevel !== "UNKNOWN" ? `Rủi ro ${data.riskLevel}` : null,
+    data.monthsBelowReserve.length ? `Thiếu quỹ ${data.monthsBelowReserve.length} tháng` : null,
+  ].filter(Boolean).map((tag) => `<span class="tag">${escapeText(tag)}</span>`).join("");
 
   byId("approvalState").textContent = data.approvalRequired ? "Cần phê duyệt" : "Không bắt buộc";
   byId("founderRequestedAmount").textContent = formatFullMoney(data.requestedAmount);
@@ -693,10 +629,6 @@ async function analyzeSelectedContract() {
   const contractId = byId("contractSelect").value.trim().toUpperCase();
   if (!contractId) return showToast("Hãy chọn mã hợp đồng.", true);
 
-  // Reset các state chỉ có ý nghĩa cho LẦN CHẠY TRƯỚC (vd +2 điểm rủi ro do
-  // Founder bỏ qua cảnh báo dữ liệu ở hợp đồng cũ) — nếu không reset, khi đổi
-  // sang hợp đồng khác các con số này sẽ bị cộng dồn sai / trông như "không đổi".
-  state.riskAdjustment = 0;
   state.contractId = contractId;
   setLoading(true);
 
@@ -894,7 +826,9 @@ function bindEvents() {
     } catch (error) {
       console.warn("Không thể gọi API đăng xuất:", error);
     } finally {
-      window.location.replace("/");
+      // Trên GitHub Pages "/" là chính index.html (dashboard), không phải
+      // trang login của backend Render -> phải trỏ về login.html tại chỗ.
+      window.location.replace("login.html");
     }
   });
   byId("analyzeButton").addEventListener("click", analyzeSelectedContract);

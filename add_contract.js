@@ -18,7 +18,7 @@
 
   async function initAddContractModule() {
     try {
-      const response = await fetch("/UI/add_contract.html", { credentials: "same-origin" });
+      const response = await fetch("add_contract.html", { credentials: "same-origin" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       document.body.insertAdjacentHTML("beforeend", await response.text());
 
