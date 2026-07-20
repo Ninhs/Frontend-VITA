@@ -785,7 +785,13 @@ function renderAnomalyMetric() {
           transaction.id,
           "Không rõ mã"
         );
-        const riskScore = numberValue(transaction.risk_score, NaN);
+        const riskScore = numberValue(
+          firstDefined(
+            transaction.transaction_risk_score,
+            transaction.risk_score
+          ),
+          NaN
+        );
         const reason = firstDefined(
           transaction.reason,
           transaction.description,
