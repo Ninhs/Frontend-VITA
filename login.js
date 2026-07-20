@@ -1,9 +1,5 @@
 "use strict";
 
-// Phải khớp với API_BASE trong frontend.js — điền URL Render nếu host
-// frontend riêng trên GitHub Pages, để trống "" nếu chạy chung 1 domain.
-const API_BASE = "https://backend-vita.onrender.com";
-
 const form = document.getElementById("loginForm");
 const username = document.getElementById("username");
 const password = document.getElementById("password");
@@ -34,18 +30,14 @@ form.addEventListener("submit", async (event) => {
   loginButton.disabled = true;
   loginButton.textContent = "Đang đăng nhập...";
   try {
-    const response = await fetch(`${API_BASE}/api/auth/login`, {
+    const response = await fetch("/api/auth/login", {
       method: "POST",
-      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: username.value.trim(), password: password.value }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.detail || "Đăng nhập không thành công.");
-    // Nếu frontend tách domain (GitHub Pages), sau khi login KHÔNG redirect
-    // sang /dashboard của backend Render — mà chuyển sang trang dashboard
-    // tĩnh trên chính GitHub Pages.
-    window.location.replace(API_BASE ? "index.html" : "/dashboard");
+    window.location.replace("/dashboard");
   } catch (error) {
     loginError.textContent = error.message;
     password.select();
